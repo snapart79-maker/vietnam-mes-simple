@@ -179,11 +179,28 @@ export const ProcessView = () => {
         <div className="lg:col-span-1 space-y-6 flex flex-col">
           {/* Scan Section */}
           <Card className="shadow-md border-slate-200">
-            <CardHeader className="pb-3">
+            <CardHeader className="pb-3 flex flex-row items-center justify-between">
               <CardTitle className="text-lg flex items-center gap-2">
                 <ScanLine className="h-5 w-5 text-blue-600" />
                 바코드 스캔
               </CardTitle>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                className="text-xs text-slate-400 hover:text-blue-600"
+                onClick={() => {
+                  const dummyLot = `L${new Date().getFullYear()}${(new Date().getMonth()+1).toString().padStart(2, '0')}${new Date().getDate().toString().padStart(2, '0')}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+                  setBarcode(dummyLot);
+                  // Simulate scan immediately
+                  setScannedLot({
+                    lotNo: dummyLot,
+                    item: 'Wire Harness Type-C (TEST)',
+                    qty: 100
+                  });
+                }}
+              >
+                [개발용] 테스트 스캔
+              </Button>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleScan} className="space-y-4">

@@ -113,6 +113,9 @@
   "pnpm": {
     "overrides": {
       "vite": "7.1.11"
-    }
+    },
+    "onlyBuiltDependencies": [
+      "electron"
+    ]
   }
 }
