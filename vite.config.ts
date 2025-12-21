@@ -15,11 +15,16 @@ export default defineConfig({
       {
         // Main-Process entry file of the Electron App.
         entry: 'electron/main.ts',
+        onstart(options) {
+          // Start Electron App
+          options.startup()
+          console.log('Dev server started')
+        },
       },
       {
         entry: 'electron/preload.ts',
         onstart(options) {
-          // Notify the Renderer-Process to reload the page when the Preload-Scripts build is complete, 
+          // Notify the Renderer-Process to reload the page when the Preload-Scripts build is complete,
           // instead of restarting the entire Electron App.
           options.reload()
         },

@@ -11,11 +11,16 @@ import { MaterialReceiving } from './pages/MaterialReceiving';
 import { MaterialStock } from './pages/MaterialStock';
 import { Settings } from './pages/Settings';
 import { MaterialProvider } from './context/MaterialContext';
+import { AuthProvider } from './context/AuthContext';
+import { ProductionProvider } from './context/ProductionContext';
+import { Toaster } from 'sonner';
 
 function App() {
   return (
-    <MaterialProvider>
-      <HashRouter>
+    <AuthProvider>
+      <MaterialProvider>
+        <ProductionProvider>
+          <HashRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
           
@@ -47,8 +52,11 @@ function App() {
           {/* Fallback */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
-      </HashRouter>
-    </MaterialProvider>
+          </HashRouter>
+          <Toaster position="top-right" richColors />
+        </ProductionProvider>
+      </MaterialProvider>
+    </AuthProvider>
   );
 }
 

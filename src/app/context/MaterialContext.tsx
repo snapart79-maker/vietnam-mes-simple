@@ -20,18 +20,13 @@ interface MaterialContextType {
   addMaterial: (material: Omit<Material, 'id' | 'stock' | 'regDate'>) => void;
   updateMaterial: (material: Material) => void;
   deleteMaterial: (id: number) => void;
+  resetMaterials: () => number; // 초기화 함수 추가
 }
 
 const MaterialContext = createContext<MaterialContextType | undefined>(undefined);
 
-// 초기 Mock Data (두 페이지의 데이터를 통합)
-const INITIAL_MATERIALS: Material[] = [
-  { id: 1, code: 'MAT-001', name: '전선 (2.5mm)', spec: '2.5mm / Red', category: '원자재', unit: 'M', stock: 20, safeStock: 100, desc: '기본 전원선', regDate: '2023-12-01' },
-  { id: 2, code: 'MAT-002', name: '터미널 (Ring)', spec: 'R-Type / Ø4', category: '부자재', unit: 'EA', stock: 150, safeStock: 500, desc: '링 터미널', regDate: '2023-12-02' },
-  { id: 3, code: 'MAT-003', name: '수축 튜브', spec: 'Ø3 / Black', category: '부자재', unit: 'M', stock: 50, safeStock: 50, desc: '절연 마감용', regDate: '2023-12-05' },
-  { id: 4, code: 'MAT-004', name: '커넥터 (2P)', spec: 'Housing 2P', category: '부자재', unit: 'EA', stock: 0, safeStock: 300, desc: '전원 연결용', regDate: '2023-12-10' },
-  { id: 5, code: 'MAT-005', name: '라벨 용지', spec: '40x20mm', category: '소모품', unit: 'Roll', stock: 1200, safeStock: 500, desc: '식별 라벨', regDate: '2023-12-11' },
-];
+// 초기 데이터 없음 (공장초기화 상태)
+const INITIAL_MATERIALS: Material[] = [];
 
 export const MaterialProvider = ({ children }: PropsWithChildren) => {
   const [materials, setMaterials] = useState<Material[]>(INITIAL_MATERIALS);
@@ -55,8 +50,14 @@ export const MaterialProvider = ({ children }: PropsWithChildren) => {
     setMaterials(materials.filter(m => m.id !== id));
   };
 
+  const resetMaterials = () => {
+    const count = materials.length;
+    setMaterials([]);
+    return count;
+  };
+
   return (
-    <MaterialContext.Provider value={{ materials, addMaterial, updateMaterial, deleteMaterial }}>
+    <MaterialContext.Provider value={{ materials, addMaterial, updateMaterial, deleteMaterial, resetMaterials }}>
       {children}
     </MaterialContext.Provider>
   );

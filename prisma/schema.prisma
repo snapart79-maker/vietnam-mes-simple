@@ -1,0 +1,428 @@
+// Vietnam MES - Prisma Schema
+// PostgreSQL Database
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// 1. 사용자 (User) - 인증/권한 관리
+// ============================================
+model User {
+  id          Int       @id @default(autoincrement())
+  username    String    @unique @db.VarChar(50)
+  password    String    @db.VarChar(255)  // bcrypt 해시
+  name        String    @db.VarChar(100)
+  role        UserRole  @default(OPERATOR)
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  productionLots ProductionLot[]
+  inspections    Inspection[]
+  tableSettings  TableUserSettings[]
+
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+}
+
+// ============================================
+// 2. 제품 (Product) - 완제품/반제품 마스터
+// ============================================
+model Product {
+  id            Int           @id @default(autoincrement())
+  code          String        @unique @db.VarChar(50)
+  name          String        @db.VarChar(200)
+  spec          String?       @db.VarChar(200)
+  type          ProductType   @default(FINISHED)
+  processCode   String?       @db.VarChar(10) @map("process_code")  // CA, MC, PA 등
+  crimpCode     String?       @db.VarChar(50) @map("crimp_code")    // 압착 제품 코드
+  parentCode    String?       @db.VarChar(50) @map("parent_code")   // 완제품 품번 (반제품인 경우)
+  circuitNo     Int?          @map("circuit_no")                     // 회로번호 (절압품인 경우)
+  bundleQty     Int           @default(100) @map("bundle_qty")       // 기본 묶음 수량
+  description   String?       @db.Text
+  isActive      Boolean       @default(true) @map("is_active")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  boms            BOM[]            @relation("ProductBOM")
+  bomItems        BOM[]            @relation("BOMItem")
+  productionLots  ProductionLot[]
+  bundleLots      BundleLot[]
+  carryOvers      CarryOver[]
+  processRoutings ProcessRouting[]
+
+  @@index([code])
+  @@index([type])
+  @@index([parentCode])
+  @@map("products")
+}
+
+enum ProductType {
+  FINISHED    // 완제품
+  SEMI_CA     // CA 반제품 (절압품)
+  SEMI_MS     // MS 반제품 (중간스트립)
+  SEMI_MC     // MC 반제품 (수동압착)
+  SEMI_SB     // SB 반제품 (서브조립)
+  SEMI_HS     // HS 반제품 (열수축)
+}
+
+// ============================================
+// 3. 자재 (Material) - 자재 마스터
+// ============================================
+model Material {
+  id          Int       @id @default(autoincrement())
+  code        String    @unique @db.VarChar(50)
+  name        String    @db.VarChar(200)
+  spec        String?   @db.VarChar(200)
+  category    String    @db.VarChar(50)   // 원자재, 부자재, 소모품
+  unit        String    @db.VarChar(20)   // EA, M, Roll
+  safeStock   Int       @default(0) @map("safe_stock")
+  description String?   @db.Text
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  stocks       MaterialStock[]
+  lotMaterials LotMaterial[]
+  bomItems     BOM[]
+
+  @@index([code])
+  @@index([category])
+  @@map("materials")
+}
+
+// ============================================
+// 4. 자재 재고 (MaterialStock) - LOT별 재고 관리
+// ============================================
+model MaterialStock {
+  id          Int       @id @default(autoincrement())
+  materialId  Int       @map("material_id")
+  material    Material  @relation(fields: [materialId], references: [id])
+  lotNumber   String    @db.VarChar(100) @map("lot_number")  // 본사 바코드 LOT
+  quantity    Int       @default(0)
+  usedQty     Int       @default(0) @map("used_qty")
+  location    String?   @db.VarChar(50)   // 창고 위치
+  receivedAt  DateTime  @default(now()) @map("received_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([materialId])
+  @@index([lotNumber])
+  @@map("material_stocks")
+}
+
+// ============================================
+// 5. 생산 LOT (ProductionLot) - 핵심 테이블
+// ============================================
+model ProductionLot {
+  id              Int       @id @default(autoincrement())
+  lotNumber       String    @unique @db.VarChar(100) @map("lot_number")
+  processCode     String    @db.VarChar(10) @map("process_code")  // MO, CA, MC, MS, SB, SP, PA, HS, CI, VI
+  productId       Int?      @map("product_id")
+  product         Product?  @relation(fields: [productId], references: [id])
+  lineCode        String?   @db.VarChar(20) @map("line_code")
+  plannedQty      Int       @default(0) @map("planned_qty")
+  completedQty    Int       @default(0) @map("completed_qty")
+  defectQty       Int       @default(0) @map("defect_qty")
+  carryOverIn     Int       @default(0) @map("carry_over_in")   // 이월 입고
+  carryOverOut    Int       @default(0) @map("carry_over_out")  // 이월 출고
+  status          LotStatus @default(IN_PROGRESS)
+  barcodeVersion  Int       @default(2) @map("barcode_version")  // 1: legacy, 2: new
+  workerId        Int?      @map("worker_id")
+  worker          User?     @relation(fields: [workerId], references: [id])
+  parentLotId     Int?      @map("parent_lot_id")  // 상위 LOT (추적용)
+  parentLot       ProductionLot?  @relation("LotHierarchy", fields: [parentLotId], references: [id])
+  childLots       ProductionLot[] @relation("LotHierarchy")
+  startedAt       DateTime  @default(now()) @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  lotMaterials    LotMaterial[]
+  inspections     Inspection[]
+  bundleItems     BundleItem[]
+
+  @@index([lotNumber])
+  @@index([processCode])
+  @@index([status])
+  @@index([productId])
+  @@index([startedAt])
+  @@map("production_lots")
+}
+
+enum LotStatus {
+  IN_PROGRESS   // 진행중
+  COMPLETED     // 완료
+  CONSUMED      // 소진됨 (다음 공정에서 사용)
+  CANCELLED     // 취소
+}
+
+// ============================================
+// 6. LOT-자재 관계 (LotMaterial) - 추적용
+// ============================================
+model LotMaterial {
+  id              Int       @id @default(autoincrement())
+  productionLotId Int       @map("production_lot_id")
+  productionLot   ProductionLot @relation(fields: [productionLotId], references: [id], onDelete: Cascade)
+  materialId      Int       @map("material_id")
+  material        Material  @relation(fields: [materialId], references: [id])
+  materialLotNo   String    @db.VarChar(100) @map("material_lot_no")  // 자재 LOT 번호
+  quantity        Int       @default(0)
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([productionLotId])
+  @@index([materialId])
+  @@index([materialLotNo])
+  @@map("lot_materials")
+}
+
+// ============================================
+// 7. 검사 기록 (Inspection)
+// ============================================
+model Inspection {
+  id              Int              @id @default(autoincrement())
+  productionLotId Int              @map("production_lot_id")
+  productionLot   ProductionLot    @relation(fields: [productionLotId], references: [id], onDelete: Cascade)
+  type            InspectionType
+  result          InspectionResult
+  defectReason    String?          @db.VarChar(200) @map("defect_reason")
+  defectQty       Int              @default(0) @map("defect_qty")
+  inspectorId     Int?             @map("inspector_id")
+  inspector       User?            @relation(fields: [inspectorId], references: [id])
+  inspectedAt     DateTime         @default(now()) @map("inspected_at")
+  createdAt       DateTime         @default(now()) @map("created_at")
+
+  @@index([productionLotId])
+  @@index([type])
+  @@index([result])
+  @@map("inspections")
+}
+
+enum InspectionType {
+  CRIMP     // 압착 검사
+  CIRCUIT   // 회로 검사
+  VISUAL    // 육안 검사
+}
+
+enum InspectionResult {
+  PASS
+  FAIL
+}
+
+// ============================================
+// 8. 일련번호 카운터 (SequenceCounter)
+// ============================================
+model SequenceCounter {
+  id          Int       @id @default(autoincrement())
+  prefix      String    @db.VarChar(20)  // 공정코드 또는 복합 키
+  dateKey     String    @db.VarChar(10) @map("date_key")  // YYMMDD 형식
+  lastNumber  Int       @default(0) @map("last_number")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@unique([prefix, dateKey])
+  @@map("sequence_counters")
+}
+
+// ============================================
+// 9. BOM (Bill of Materials)
+// ============================================
+model BOM {
+  id             Int         @id @default(autoincrement())
+  productId      Int         @map("product_id")
+  product        Product     @relation("ProductBOM", fields: [productId], references: [id], onDelete: Cascade)
+  itemType       BOMItemType @map("item_type")
+  materialId     Int?        @map("material_id")
+  material       Material?   @relation(fields: [materialId], references: [id])
+  childProductId Int?        @map("child_product_id")
+  childProduct   Product?    @relation("BOMItem", fields: [childProductId], references: [id])
+  quantity       Float       @default(1)
+  unit           String?     @db.VarChar(20)
+  processCode    String?     @db.VarChar(10) @map("process_code")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  @@index([productId])
+  @@map("boms")
+}
+
+enum BOMItemType {
+  MATERIAL    // 자재
+  PRODUCT     // 반제품
+}
+
+// ============================================
+// 10. 생산 라인 (Line)
+// ============================================
+model Line {
+  id          Int       @id @default(autoincrement())
+  code        String    @unique @db.VarChar(20)
+  name        String    @db.VarChar(100)
+  processCode String    @db.VarChar(10) @map("process_code")
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([processCode])
+  @@map("lines")
+}
+
+// ============================================
+// 11. 이월 수량 (CarryOver)
+// ============================================
+model CarryOver {
+  id            Int       @id @default(autoincrement())
+  processCode   String    @db.VarChar(10) @map("process_code")
+  productId     Int       @map("product_id")
+  product       Product   @relation(fields: [productId], references: [id])
+  lineCode      String    @db.VarChar(20) @map("line_code")
+  sourceDate    DateTime  @db.Date @map("source_date")
+  sourceLotNo   String    @db.VarChar(100) @map("source_lot_no")
+  quantity      Int       @default(0)
+  usedQty       Int       @default(0) @map("used_qty")
+  targetLotNo   String?   @db.VarChar(100) @map("target_lot_no")
+  isUsed        Boolean   @default(false) @map("is_used")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([processCode, productId])
+  @@map("carry_overs")
+}
+
+// ============================================
+// 12. CA 번들 LOT (BundleLot)
+// ============================================
+model BundleLot {
+  id          Int          @id @default(autoincrement())
+  bundleNo    String       @unique @db.VarChar(100) @map("bundle_no")
+  productId   Int          @map("product_id")
+  product     Product      @relation(fields: [productId], references: [id])
+  bundleType  BundleType   @default(SAME_PRODUCT) @map("bundle_type")  // 번들 타입
+  setQuantity Int          @default(0) @map("set_quantity")  // 묶음 개수
+  totalQty    Int          @default(0) @map("total_qty")
+  status      BundleStatus @default(CREATED)
+  isActive    Boolean      @default(true) @map("is_active")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  // Relations
+  items       BundleItem[]
+
+  @@map("bundle_lots")
+}
+
+enum BundleStatus {
+  CREATED
+  SHIPPED
+  UNBUNDLED
+}
+
+enum BundleType {
+  SAME_PRODUCT    // 동일 품번 묶음
+  MULTI_PRODUCT   // 다른 품번 묶음 (SET)
+}
+
+// ============================================
+// 13. 번들 아이템 (BundleItem)
+// ============================================
+model BundleItem {
+  id              Int           @id @default(autoincrement())
+  bundleLotId     Int           @map("bundle_lot_id")
+  bundleLot       BundleLot     @relation(fields: [bundleLotId], references: [id], onDelete: Cascade)
+  productionLotId Int           @map("production_lot_id")
+  productionLot   ProductionLot @relation(fields: [productionLotId], references: [id])
+  quantity        Int           @default(0)
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  @@index([bundleLotId])
+  @@index([productionLotId])
+  @@map("bundle_items")
+}
+
+// ============================================
+// 14. 앱 설정 (AppSettings)
+// ============================================
+model AppSettings {
+  id          Int       @id @default(autoincrement())
+  key         String    @unique @db.VarChar(100)
+  value       String    @db.Text
+  description String?   @db.VarChar(200)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+
+// ============================================
+// 15. 사용자별 테이블 설정 (TableUserSettings)
+// ============================================
+model TableUserSettings {
+  id          Int       @id @default(autoincrement())
+  userId      Int       @map("user_id")
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tableName   String    @db.VarChar(100) @map("table_name")
+  settings    String    @db.Text  // JSON 형식으로 저장
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@unique([userId, tableName])
+  @@map("table_user_settings")
+}
+
+// ============================================
+// 16. 공정 마스터 (Process) - MBOM용
+// ============================================
+model Process {
+  id               Int       @id @default(autoincrement())
+  code             String    @unique @db.VarChar(10)
+  name             String    @db.VarChar(50)
+  seq              Int                                        // 공정 순서
+  hasMaterialInput Boolean   @default(false) @map("has_material_input")  // 자재 투입 여부
+  isInspection     Boolean   @default(false) @map("is_inspection")       // 검사 공정 여부
+  shortCode        String?   @db.VarChar(2) @map("short_code")           // 단축코드 (C, M, S 등)
+  description      String?   @db.Text
+  isActive         Boolean   @default(true) @map("is_active")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  processRoutings ProcessRouting[]
+
+  @@index([code])
+  @@index([seq])
+  @@map("processes")
+}
+
+// ============================================
+// 17. 공정 라우팅 (ProcessRouting) - 제품별 공정 순서
+// ============================================
+model ProcessRouting {
+  id          Int       @id @default(autoincrement())
+  productId   Int       @map("product_id")
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  processCode String    @db.VarChar(10) @map("process_code")
+  process     Process   @relation(fields: [processCode], references: [code])
+  seq         Int                                              // 제품 내 공정 순서
+  isRequired  Boolean   @default(true) @map("is_required")     // 필수 공정 여부
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@unique([productId, processCode])
+  @@index([productId])
+  @@index([processCode])
+  @@map("process_routings")
+}

@@ -146,8 +146,9 @@ export const Sidebar = ({ isCollapsed = false, toggleSidebar, isMobile = false, 
             <NavItem to="/process/mc" label="MC - 수동압착" indent {...navProps} />
             <NavItem to="/process/ms" label="MS - 중간스트립" indent {...navProps} />
             <NavItem to="/process/sb" label="SB - Sub" indent {...navProps} />
-            <NavItem to="/process/pa" label="PA - 제품조립" indent {...navProps} />
             <NavItem to="/process/hs" label="HS - 열수축" indent {...navProps} />
+            <NavItem to="/process/sp" label="SP - 제품조립제공부품" indent {...navProps} />
+            <NavItem to="/process/pa" label="PA - 제품조립" indent {...navProps} />
           </div>
         )}
 

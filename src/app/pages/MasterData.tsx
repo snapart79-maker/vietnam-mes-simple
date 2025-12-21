@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Badge } from '../components/ui/badge';
 import { toast } from 'sonner';
 import { useMaterial, Material } from '../context/MaterialContext';
-import { downloadTemplate } from '@/lib/excelUtils';
+import { downloadImportTemplate } from '@/services/excelImportService';
 
 export const MasterData = () => {
   const { type } = useParams<{ type: string }>();
@@ -89,9 +89,13 @@ export const MasterData = () => {
   };
 
   const handleDownloadTemplate = () => {
-    const headers = ['코드', '품명', '규격/사양', '단위', '유형', '안전재고', '설명'];
-    downloadTemplate(headers, '자재등록_양식', '자재양식');
-    toast.success('양식 파일이 다운로드되었습니다.');
+    const templateType = type as 'product' | 'material' | 'bom'
+    if (templateType === 'product' || templateType === 'material' || templateType === 'bom') {
+      downloadImportTemplate(templateType)
+      toast.success('양식 파일이 다운로드되었습니다.')
+    } else {
+      toast.info('이 유형은 템플릿이 없습니다.')
+    }
   };
 
   const renderMaterialTable = () => (
@@ -182,7 +186,7 @@ export const MasterData = () => {
       );
     }
 
-    // Default Fallback for other types
+    // Default Fallback for other types (product, user) - 아직 서비스 미연동
     return (
       <Card className="shadow-sm border-slate-200">
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
@@ -205,35 +209,13 @@ export const MasterData = () => {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {[1, 2, 3].map((i) => (
-                <TableRow key={i}>
-                  <TableCell className="font-medium">{i}</TableCell>
-                  <TableCell className="font-mono">
-                    {type === 'user' ? `USER-00${i}` : `ITEM-${202300+i}`}
-                  </TableCell>
-                  <TableCell>
-                    {type === 'user' ? `홍길동 ${i}` : `Sample Item ${i}`}
-                  </TableCell>
-                  <TableCell className="text-slate-500">
-                    {type === 'user' ? '생산팀 / 사원' : '샘플 데이터입니다.'}
-                  </TableCell>
-                  <TableCell>2023-12-01</TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" className="h-8 w-8 p-0">
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem>
-                          <Edit2 className="mr-2 h-4 w-4" /> 수정
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))}
+              <TableRow>
+                <TableCell colSpan={6} className="text-center py-8 text-slate-400">
+                  {type === 'product' && '등록된 품번이 없습니다. 신규 등록 버튼을 눌러 추가하세요.'}
+                  {type === 'user' && '등록된 사용자가 없습니다. (admin 제외)'}
+                  {type !== 'product' && type !== 'user' && '데이터가 없습니다.'}
+                </TableCell>
+              </TableRow>
             </TableBody>
           </Table>
         </CardContent>
@@ -282,11 +264,11 @@ export const MasterData = () => {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="type">자재 유형</Label>
-                  <Input 
-                    id="type" 
-                    value={currentMaterial?.type || ''} 
-                    onChange={(e) => setCurrentMaterial(prev => prev ? {...prev, type: e.target.value} : null)}
+                  <Label htmlFor="category">자재 유형</Label>
+                  <Input
+                    id="category"
+                    value={currentMaterial?.category || ''}
+                    onChange={(e) => setCurrentMaterial(prev => prev ? {...prev, category: e.target.value} : null)}
                     placeholder="예: 원자재, 부자재"
                   />
                 </div>

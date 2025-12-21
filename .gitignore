@@ -38,3 +38,7 @@ pnpm-debug.log*
 
 # Optional stylelint cache
 .stylelintcache
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
