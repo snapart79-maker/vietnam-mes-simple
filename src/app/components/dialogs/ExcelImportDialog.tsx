@@ -4,7 +4,7 @@
  * Excel 파일 Import UI
  * - 파일 선택 → 시트 선택 → 미리보기 → Import
  */
-import { useState, useCallback } from 'react'
+import React, { useState, useCallback } from 'react'
 import * as XLSX from 'xlsx'
 import {
   Dialog,
@@ -22,19 +22,21 @@ import {
   importMaterials,
   importBOM,
   importStock,
+  importMaterialReceiving,
   downloadImportTemplate,
   type SheetInfo,
   type ImportResult,
   type ImportOptions,
 } from '@/services/excelImportService'
 
-export type ImportType = 'product' | 'material' | 'bom' | 'stock'
+export type ImportType = 'product' | 'material' | 'bom' | 'stock' | 'receiving'
 
 interface ExcelImportDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   importType: ImportType
   onImportComplete?: (result: ImportResult) => void
+  initialFile?: File | null  // 외부에서 전달받은 파일 (드롭존 등)
 }
 
 const IMPORT_TYPE_LABELS: Record<ImportType, string> = {
@@ -42,6 +44,7 @@ const IMPORT_TYPE_LABELS: Record<ImportType, string> = {
   material: '자재',
   bom: 'BOM',
   stock: '재고',
+  receiving: '자재 입고',
 }
 
 export function ExcelImportDialog({
@@ -49,6 +52,7 @@ export function ExcelImportDialog({
   onOpenChange,
   importType,
   onImportComplete,
+  initialFile,
 }: ExcelImportDialogProps) {
   const [step, setStep] = useState<'upload' | 'preview' | 'result'>('upload')
   const [file, setFile] = useState<File | null>(null)
@@ -59,6 +63,41 @@ export function ExcelImportDialog({
   const [skipDuplicates, setSkipDuplicates] = useState(true)
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
+
+  // 외부에서 전달받은 파일 처리
+  const processFile = useCallback(async (fileToProcess: File) => {
+    setIsLoading(true)
+    try {
+      const wb = await parseExcelFile(fileToProcess)
+      const sheetInfos = getSheetInfo(wb)
+
+      setFile(fileToProcess)
+      setWorkbook(wb)
+      setSheets(sheetInfos)
+      setSelectedSheet(sheetInfos[0]?.name || '')
+
+      // 미리보기 데이터 로드
+      if (sheetInfos.length > 0) {
+        const preview = previewData<Record<string, unknown>>(wb, {
+          sheetName: sheetInfos[0].name,
+        })
+        setPreviewRows(preview)
+      }
+
+      setStep('preview')
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '파일 처리 오류')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
+  // initialFile이 변경되면 자동으로 처리
+  React.useEffect(() => {
+    if (open && initialFile && step === 'upload') {
+      processFile(initialFile)
+    }
+  }, [open, initialFile, step, processFile])
 
   // 파일 선택 핸들러
   const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -128,6 +167,9 @@ export function ExcelImportDialog({
           break
         case 'stock':
           importResult = await importStock(file, options)
+          break
+        case 'receiving':
+          importResult = await importMaterialReceiving(file, options)
           break
         default:
           throw new Error('지원하지 않는 Import 유형입니다.')

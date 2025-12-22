@@ -244,6 +244,25 @@ npx prisma studio
 | V1 (레거시) | `XX-YYMMDD-XXXX` | `CA-241220-0001` |
 | V2 (신규) | `[Process][Product]Q[Qty]-[Short][YYMMDD]-[LOT]` | `CAP001Q100-C241220-0001` |
 | 번들 | `[Process][Product]Q[Set]-[Short][YYMMDD]-B[LOT]` | `CAP001Q4-C241220-B001` |
+| 본사(HQ) | `P[본사코드]Q[수량]S[LOT]V[버전]` | `P682028Q20000S250922V1` |
+
+### 본사 바코드-자재 매핑
+
+본사에서 입고되는 자재 바코드와 MES 자재 품번 간 매핑:
+
+| 항목 | 예시 | 설명 |
+|------|------|------|
+| 본사 바코드 | `P682028Q20000S250922V1` | 본사 발행 바코드 |
+| 본사 코드 (hqCode) | `682028` | 바코드에서 추출 |
+| MES 품번 (code) | `250-1235` | 내부 관리 품번 |
+
+**자재 등록 시 `hqCode` 필드에 본사 코드를 입력하면 바코드 스캔 시 자동 매칭됩니다.**
+
+```typescript
+// MaterialContext에서 본사 코드로 자재 조회
+const { getMaterialByHQCode } = useMaterial()
+const material = getMaterialByHQCode('682028')  // 본사코드로 자재 찾기
+```
 
 ### 공정 단축코드
 
@@ -284,6 +303,44 @@ const bundle = generateBundleBarcode('CA', 'P001', 4, 1)  // CAP001Q4-C241220-B0
 const parsed = parseBarcode('CAP001Q100-C241220-0001')
 // { version: 2, processCode: 'CA', productCode: 'P001', quantity: 100, ... }
 ```
+
+### 본사 바코드 매칭
+
+본사 바코드에서 추출한 코드로 자재를 찾는 다단계 검색:
+
+| 순서 | 검색 방법 | 대상 공급사 |
+|------|-----------|-------------|
+| 1 | hqCode 정확 일치 | 한국단자공업, 우주일렉트로닉스 등 (48%) |
+| 2 | code(품번) 정확 일치 | 금호에이치티, 신화산업 등 (27%) |
+| 3 | name 정확 일치 | 하위 호환성 |
+| 4 | 전선 색상코드 매핑 | 경신전선, 케이알로지스, 히로세코리아 (23%) |
+| 5 | 정규화 비교 | 대시/공백 제거 (660480K7 vs 660480-K7) |
+| 6 | hqCode 접두사 일치 | 접미사 붙은 경우 |
+| 7 | hqCode 접미사 일치 | MG646390-5 → 646390-5 |
+| 8 | 품명에 코드 포함 | 사마스전자 (품명에 코드 포함) |
+| 9 | 정규화 부분 일치 | 기타 예외 케이스 |
+
+```typescript
+import { useMaterial } from '@/app/context/MaterialContext'
+
+const { getMaterialByHQCode } = useMaterial()
+
+// 바코드에서 추출한 코드로 자재 검색
+const material = getMaterialByHQCode('682028')  // 다단계 검색
+```
+
+### 전선 색상코드 매핑
+
+경신전선, 케이알로지스 등 전선 공급사는 바코드에 자체 색상코드를 사용합니다.
+매핑 데이터는 `public/data/wire-color-mapping.json`에 저장됩니다.
+
+| 공급사 | 예시 | 매핑 수 |
+|--------|------|---------|
+| 경신전선 | C1A1BKR → 210-4917 | 738개 |
+| 케이알로지스 | E1A1RD0 → 210-8602 | 151개 |
+| 히로세코리아 | 6442-0032-2-000 → 250-4431 | 87개 |
+
+설정 → 데이터 및 백업에서 "기본 매핑 로드" 버튼으로 매핑을 로드할 수 있습니다.
 
 ## 일련번호 서비스
 
@@ -702,6 +759,9 @@ winget install PostgreSQL.PostgreSQL.17
 
 | 날짜 | 내용 |
 |------|------|
+| 2025-12-22 | 전선 색상코드 매핑 (경신전선/케이알로지스 976개 매핑, WireColorMapping 타입, 설정 페이지 로드 UI) |
+| 2025-12-22 | 바코드 매칭 개선 (9단계 검색: hqCode→code→name→wireMapping→정규화→부분일치, 76.1% 매칭률) |
+| 2025-12-22 | 본사 바코드-자재 매핑 기능 (hqCode 필드 추가, parseHQBarcode 개선, getMaterialByHQCode 함수) |
 | 2025-12-22 | Context localStorage 영속화 (MaterialContext, ProductContext, BOMContext - 앱 재시작 시 데이터 유지) |
 | 2025-12-22 | Electron 실행 환경 개선 (빈 화면 수정, DevTools 제거, 브라우저 전용 모드 추가) |
 | 2025-12-22 | 간편 실행 배치 파일 생성 (run.bat: Electron 모드, run-browser.bat: 브라우저 전용 모드) |

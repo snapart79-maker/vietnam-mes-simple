@@ -33,8 +33,9 @@ import { downloadImportTemplate } from '@/services/excelImportService'
 import { parseHQBarcode, type ParsedHQBarcode } from '@/services/barcodeService'
 // Mock 서비스 사용 (브라우저에서 Prisma 사용 불가)
 import { receiveStock, getTodayReceivings, type ReceiveStockInput } from '@/services/mock/stockService.mock'
-import { getMaterialByCode } from '@/services/mock/materialService.mock'
 import { ExcelImportDialog } from '../components/dialogs/ExcelImportDialog'
+// MaterialContext에서 HQ 코드로 자재 조회
+import { useMaterial } from '@/app/context/MaterialContext'
 
 interface ScannedItem {
   id: number
@@ -54,6 +55,10 @@ export const MaterialReceiving = () => {
   const [scannedItems, setScannedItems] = useState<ScannedItem[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
+  const [droppedFile, setDroppedFile] = useState<File | null>(null)
+
+  // MaterialContext에서 자재 조회 함수 가져오기
+  const { getMaterialByHQCode, getMaterialByCode } = useMaterial()
 
   // 금일 입고 내역 로드
   const loadTodayReceivings = useCallback(async () => {
@@ -82,6 +87,7 @@ export const MaterialReceiving = () => {
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
+      setDroppedFile(acceptedFiles[0])
       setShowImportDialog(true)
     }
   }, [])
@@ -109,7 +115,7 @@ export const MaterialReceiving = () => {
       // 1. 바코드 파싱
       const parsed = parseHQBarcode(barcode.trim())
 
-      if (!parsed) {
+      if (!parsed || !parsed.isValid) {
         // 바코드 형식이 맞지 않으면 직접 입력으로 처리
         toast.error('올바른 바코드 형식이 아닙니다. 수동 입력을 시도합니다.')
         setIsProcessing(false)
@@ -117,25 +123,27 @@ export const MaterialReceiving = () => {
       }
 
       const qty = parsed.quantity || 1
+      const hqCode = parsed.materialCode // 바코드에서 추출한 본사 코드
 
-      // 2. 자재 조회
-      const material = await getMaterialByCode(parsed.materialCode)
+      // 2. 자재 조회 (본사 코드 → MES 자재)
+      // getMaterialByHQCode는 hqCode, name, code 순으로 매칭 시도
+      const material = getMaterialByHQCode(hqCode)
 
       if (!material) {
         const errorItem: ScannedItem = {
           id: Date.now(),
           barcode: barcode.trim(),
-          materialCode: parsed.materialCode,
+          materialCode: hqCode,
           materialName: '(미등록 자재)',
           lotNumber: parsed.lotNumber,
           quantity: qty,
           unit: 'EA',
           time: new Date().toLocaleTimeString(),
           status: 'error',
-          error: '미등록 자재',
+          error: `본사코드 ${hqCode} 미등록`,
         }
         setScannedItems((prev) => [errorItem, ...prev])
-        toast.error(`자재 코드 ${parsed.materialCode}가 등록되어 있지 않습니다.`)
+        toast.error(`본사 코드 ${hqCode}에 해당하는 자재가 등록되어 있지 않습니다.`)
         setBarcode('')
         setIsProcessing(false)
         return
@@ -196,7 +204,8 @@ export const MaterialReceiving = () => {
     lotNumber: string,
     quantity: number
   ) => {
-    const material = await getMaterialByCode(materialCode)
+    // MaterialContext에서 자재 조회 (품번 또는 본사코드로)
+    const material = getMaterialByCode(materialCode) || getMaterialByHQCode(materialCode)
     if (!material) {
       toast.error('자재를 찾을 수 없습니다.')
       return
@@ -244,7 +253,7 @@ export const MaterialReceiving = () => {
               <CardTitle>스캔 입력</CardTitle>
               <CardDescription>
                 본사 바코드를 스캔하여 입고 처리합니다. (형식:
-                자재품번-LOT번호-수량)
+                P{'{본사코드}'}Q{'{수량}'}S{'{LOT}'} 예: P682028Q20000S250922V1)
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -394,8 +403,14 @@ export const MaterialReceiving = () => {
       {/* Excel Import Dialog */}
       <ExcelImportDialog
         open={showImportDialog}
-        onOpenChange={setShowImportDialog}
-        importType="stock"
+        onOpenChange={(open) => {
+          setShowImportDialog(open)
+          if (!open) {
+            setDroppedFile(null)  // 다이얼로그 닫을 때 파일 초기화
+          }
+        }}
+        importType="receiving"
+        initialFile={droppedFile}
         onImportComplete={(result) => {
           if (result.success) {
             loadTodayReceivings()

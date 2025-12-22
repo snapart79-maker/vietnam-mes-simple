@@ -3,6 +3,7 @@
  *
  * 브라우저 개발용 Mock 데이터
  * Phase 4: BOM 기반 자재 차감
+ * - localStorage 영속화 지원
  */
 
 import { calculateRequiredMaterials, type CalculatedRequirement } from './bomService.mock'
@@ -14,16 +15,17 @@ import { calculateRequiredMaterials, type CalculatedRequirement } from './bomSer
 export interface ReceiveStockInput {
   materialId: number
   materialCode: string
+  materialName?: string
   lotNumber: string
   quantity: number
-  receivedAt?: Date
+  receivedAt?: Date | string
 }
 
 export interface ReceivingRecord {
   id: number
   lotNumber: string
   quantity: number
-  receivedAt: Date
+  receivedAt: string  // ISO string for localStorage
   material: {
     code: string
     name: string
@@ -52,7 +54,7 @@ export interface StockItem {
   quantity: number
   usedQty: number
   availableQty: number
-  receivedAt: Date
+  receivedAt: string  // ISO string for localStorage
 }
 
 export interface MaterialInput {
@@ -86,24 +88,71 @@ export interface DeductionResult {
   errors: string[]
 }
 
-// ============================================
-// Mock Data Storage
-// ============================================
-
-// Mock 입고 기록 (초기 데이터 없음 - 공장초기화 상태)
-const mockReceivings: ReceivingRecord[] = []
-
-// Mock 재고 (LOT별)
-const MOCK_STOCKS: StockItem[] = []
-
-// Mock LOT 자재 사용 기록
-const MOCK_LOT_MATERIALS: Array<{
+export interface LotMaterialRecord {
   id: number
   productionLotId: number
   materialId: number
   materialLotNo: string
   quantity: number
-}> = []
+}
+
+// ============================================
+// LocalStorage Keys & Persistence
+// ============================================
+
+const STORAGE_KEYS = {
+  RECEIVINGS: 'vietnam_mes_receivings',
+  STOCKS: 'vietnam_mes_stocks',
+  LOT_MATERIALS: 'vietnam_mes_lot_materials',
+}
+
+// 데이터 로드
+function loadFromStorage<T>(key: string, defaultValue: T[]): T[] {
+  try {
+    const stored = localStorage.getItem(key)
+    if (stored) {
+      return JSON.parse(stored)
+    }
+  } catch (error) {
+    console.error(`Failed to load ${key} from localStorage:`, error)
+  }
+  return defaultValue
+}
+
+// 데이터 저장
+function saveToStorage<T>(key: string, data: T[]): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(data))
+  } catch (error) {
+    console.error(`Failed to save ${key} to localStorage:`, error)
+  }
+}
+
+// ============================================
+// Mock Data Storage (with localStorage)
+// ============================================
+
+// Mock 입고 기록
+let mockReceivings: ReceivingRecord[] = loadFromStorage(STORAGE_KEYS.RECEIVINGS, [])
+
+// Mock 재고 (LOT별)
+let MOCK_STOCKS: StockItem[] = loadFromStorage(STORAGE_KEYS.STOCKS, [])
+
+// Mock LOT 자재 사용 기록
+let MOCK_LOT_MATERIALS: LotMaterialRecord[] = loadFromStorage(STORAGE_KEYS.LOT_MATERIALS, [])
+
+// 저장 헬퍼 함수들
+function saveReceivings(): void {
+  saveToStorage(STORAGE_KEYS.RECEIVINGS, mockReceivings)
+}
+
+function saveStocks(): void {
+  saveToStorage(STORAGE_KEYS.STOCKS, MOCK_STOCKS)
+}
+
+function saveLotMaterials(): void {
+  saveToStorage(STORAGE_KEYS.LOT_MATERIALS, MOCK_LOT_MATERIALS)
+}
 
 // ============================================
 // Stock Receiving (Mock)
@@ -115,28 +164,40 @@ const MOCK_LOT_MATERIALS: Array<{
 export async function receiveStock(input: ReceiveStockInput): Promise<ReceiveStockResult> {
   await new Promise((r) => setTimeout(r, 300))
 
-  const newId = MOCK_STOCKS.length + 1
+  const newId = MOCK_STOCKS.length > 0 ? Math.max(...MOCK_STOCKS.map(s => s.id)) + 1 : 1
+  const receivedAt = input.receivedAt
+    ? (typeof input.receivedAt === 'string' ? input.receivedAt : input.receivedAt.toISOString())
+    : new Date().toISOString()
+
   const stockItem: StockItem = {
     id: newId,
     materialId: input.materialId,
     materialCode: input.materialCode,
-    materialName: '자재명',
+    materialName: input.materialName || input.materialCode,
     lotNumber: input.lotNumber,
     quantity: input.quantity,
     usedQty: 0,
     availableQty: input.quantity,
-    receivedAt: input.receivedAt || new Date(),
+    receivedAt,
   }
 
   MOCK_STOCKS.push(stockItem)
+  saveStocks()
 
-  mockReceivings.push({
+  const receivingRecord: ReceivingRecord = {
     id: newId,
     lotNumber: input.lotNumber,
     quantity: input.quantity,
-    receivedAt: input.receivedAt || new Date(),
-    material: { code: input.materialCode, name: '자재명', unit: 'EA' },
-  })
+    receivedAt,
+    material: {
+      code: input.materialCode,
+      name: input.materialName || input.materialCode,
+      unit: 'EA',
+    },
+  }
+
+  mockReceivings.push(receivingRecord)
+  saveReceivings()
 
   return {
     success: true,
@@ -155,12 +216,83 @@ export async function receiveStock(input: ReceiveStockInput): Promise<ReceiveSto
  */
 export async function getTodayReceivings(): Promise<ReceivingRecord[]> {
   await new Promise((r) => setTimeout(r, 200))
-  return mockReceivings
+
+  const today = new Date().toISOString().split('T')[0]
+  return mockReceivings.filter((r) => r.receivedAt.startsWith(today))
+}
+
+/**
+ * 전체 입고 이력 조회 (Mock)
+ */
+export async function getAllReceivings(options?: {
+  startDate?: string
+  endDate?: string
+  materialCode?: string
+  limit?: number
+}): Promise<ReceivingRecord[]> {
+  await new Promise((r) => setTimeout(r, 200))
+
+  let result = [...mockReceivings]
+
+  // 날짜 필터
+  if (options?.startDate) {
+    result = result.filter((r) => r.receivedAt >= options.startDate!)
+  }
+  if (options?.endDate) {
+    result = result.filter((r) => r.receivedAt <= options.endDate! + 'T23:59:59')
+  }
+
+  // 자재 코드 필터
+  if (options?.materialCode) {
+    result = result.filter((r) =>
+      r.material.code.toLowerCase().includes(options.materialCode!.toLowerCase())
+    )
+  }
+
+  // 최신순 정렬
+  result.sort((a, b) => b.receivedAt.localeCompare(a.receivedAt))
+
+  // 개수 제한
+  if (options?.limit) {
+    result = result.slice(0, options.limit)
+  }
+
+  return result
 }
 
 // ============================================
 // Stock Queries (Mock)
 // ============================================
+
+/**
+ * 전체 LOT별 재고 조회 (Mock)
+ */
+export async function getAllStocks(options?: {
+  materialCode?: string
+  showZero?: boolean
+}): Promise<StockItem[]> {
+  await new Promise((r) => setTimeout(r, 100))
+
+  let result = [...MOCK_STOCKS]
+
+  // 자재 코드 필터
+  if (options?.materialCode) {
+    result = result.filter((s) =>
+      s.materialCode.toLowerCase().includes(options.materialCode!.toLowerCase()) ||
+      s.materialName.toLowerCase().includes(options.materialCode!.toLowerCase())
+    )
+  }
+
+  // 소진 재고 숨기기
+  if (!options?.showZero) {
+    result = result.filter((s) => s.availableQty > 0)
+  }
+
+  // 최신순 정렬
+  result.sort((a, b) => b.receivedAt.localeCompare(a.receivedAt))
+
+  return result
+}
 
 /**
  * 자재별 재고 조회 (Mock)
@@ -177,7 +309,40 @@ export async function getAvailableQty(materialId: number): Promise<number> {
   await new Promise((r) => setTimeout(r, 50))
 
   const stocks = MOCK_STOCKS.filter((s) => s.materialId === materialId)
-  return stocks.reduce((sum, s) => sum + (s.quantity - s.usedQty), 0)
+  return stocks.reduce((sum, s) => sum + s.availableQty, 0)
+}
+
+/**
+ * 자재 코드로 가용 재고 수량 조회 (Mock)
+ */
+export async function getAvailableQtyByCode(materialCode: string): Promise<number> {
+  await new Promise((r) => setTimeout(r, 50))
+
+  const stocks = MOCK_STOCKS.filter((s) => s.materialCode === materialCode)
+  return stocks.reduce((sum, s) => sum + s.availableQty, 0)
+}
+
+/**
+ * 재고 요약 통계 조회 (Mock)
+ */
+export async function getStockSummary(): Promise<{
+  totalLots: number
+  totalQuantity: number
+  totalAvailable: number
+  totalUsed: number
+  materialCount: number
+}> {
+  await new Promise((r) => setTimeout(r, 100))
+
+  const materialCodes = new Set(MOCK_STOCKS.map((s) => s.materialCode))
+
+  return {
+    totalLots: MOCK_STOCKS.length,
+    totalQuantity: MOCK_STOCKS.reduce((sum, s) => sum + s.quantity, 0),
+    totalAvailable: MOCK_STOCKS.reduce((sum, s) => sum + s.availableQty, 0),
+    totalUsed: MOCK_STOCKS.reduce((sum, s) => sum + s.usedQty, 0),
+    materialCount: materialCodes.size,
+  }
 }
 
 // ============================================
@@ -200,7 +365,7 @@ export async function consumeStockFIFOWithNegative(
   await new Promise((r) => setTimeout(r, 100))
 
   const stocks = MOCK_STOCKS.filter((s) => s.materialId === materialId).sort(
-    (a, b) => a.receivedAt.getTime() - b.receivedAt.getTime()
+    (a, b) => a.receivedAt.localeCompare(b.receivedAt)
   )
 
   let remainingQty = quantity
@@ -211,7 +376,7 @@ export async function consumeStockFIFOWithNegative(
   for (const stock of stocks) {
     if (remainingQty <= 0) break
 
-    const availableQty = stock.quantity - stock.usedQty
+    const availableQty = stock.availableQty
     if (availableQty <= 0) continue
 
     const useQty = Math.min(availableQty, remainingQty)
@@ -219,8 +384,12 @@ export async function consumeStockFIFOWithNegative(
     stock.availableQty = stock.quantity - stock.usedQty
 
     if (productionLotId) {
+      const lotMaterialId = MOCK_LOT_MATERIALS.length > 0
+        ? Math.max(...MOCK_LOT_MATERIALS.map(m => m.id)) + 1
+        : 1
+
       MOCK_LOT_MATERIALS.push({
-        id: MOCK_LOT_MATERIALS.length + 1,
+        id: lotMaterialId,
         productionLotId,
         materialId,
         materialLotNo: stock.lotNumber,
@@ -240,8 +409,12 @@ export async function consumeStockFIFOWithNegative(
     targetStock.availableQty = targetStock.quantity - targetStock.usedQty
 
     if (productionLotId) {
+      const lotMaterialId = MOCK_LOT_MATERIALS.length > 0
+        ? Math.max(...MOCK_LOT_MATERIALS.map(m => m.id)) + 1
+        : 1
+
       MOCK_LOT_MATERIALS.push({
-        id: MOCK_LOT_MATERIALS.length + 1,
+        id: lotMaterialId,
         productionLotId,
         materialId,
         materialLotNo: targetStock.lotNumber,
@@ -259,6 +432,10 @@ export async function consumeStockFIFOWithNegative(
     totalDeducted += remainingQty
     remainingQty = 0
   }
+
+  // 변경 사항 저장
+  saveStocks()
+  saveLotMaterials()
 
   return {
     lots: usedLots,
@@ -382,6 +559,10 @@ export async function rollbackBOMDeduction(productionLotId: number): Promise<num
     }
   }
 
+  // 변경 사항 저장
+  saveStocks()
+  saveLotMaterials()
+
   return restoredCount
 }
 
@@ -435,9 +616,14 @@ export async function checkBOMAvailability(
  */
 export function resetStockData(): number {
   const count = mockReceivings.length + MOCK_STOCKS.length
-  mockReceivings.length = 0
-  MOCK_STOCKS.length = 0
-  MOCK_LOT_MATERIALS.length = 0
+  mockReceivings = []
+  MOCK_STOCKS = []
+  MOCK_LOT_MATERIALS = []
+
+  saveReceivings()
+  saveStocks()
+  saveLotMaterials()
+
   return count
 }
 
@@ -446,6 +632,30 @@ export function resetStockData(): number {
  */
 export function addMockStock(stock: StockItem): void {
   MOCK_STOCKS.push(stock)
+  saveStocks()
+}
+
+/**
+ * 일괄 입고 처리 (Excel Import용)
+ */
+export async function bulkReceiveStock(items: ReceiveStockInput[]): Promise<{
+  success: number
+  failed: number
+  errors: string[]
+}> {
+  const result = { success: 0, failed: 0, errors: [] as string[] }
+
+  for (const item of items) {
+    try {
+      await receiveStock(item)
+      result.success++
+    } catch (error) {
+      result.failed++
+      result.errors.push(`${item.materialCode}: ${error instanceof Error ? error.message : '입고 실패'}`)
+    }
+  }
+
+  return result
 }
 
 // Re-export types

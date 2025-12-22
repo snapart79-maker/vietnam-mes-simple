@@ -380,12 +380,23 @@ export function parseBarcode(barcode: string): ParsedBarcode {
 // ============================================
 
 /**
+ * 본사 바코드 패턴 정규식
+ * 패턴 1: P{hqCode}Q{quantity}S{lotInfo}V{version}
+ *   예: P682028Q20000S250922V1
+ * 패턴 2: P{hqCode}Q{quantity}S{lotInfo} (버전 없음)
+ *   예: P210-8624Q1500S2025100201180
+ */
+const HQ_BARCODE_PATTERN = /^P([A-Z0-9-]+)Q(\d+)S(.+?)(?:V(\d+))?$/i
+
+/**
  * 본사 바코드 파싱
  * 다양한 형식 지원
  *
  * 형식 예시:
- * - M-WIRE-001-L20241220-0001
- * - WIRE001/LOT20241220/100
+ * - P682028Q20000S250922V1 → hqCode=682028, qty=20000
+ * - P210-8624Q1500S2025100201180 → hqCode=210-8624, qty=1500
+ * - KH1200030-22:12000:50603KDR20701B021 (기타 형식)
+ * - 100188305110201171101 (숫자만)
  */
 export function parseHQBarcode(barcode: string): ParsedHQBarcode {
   const raw = barcode.trim()
@@ -399,21 +410,52 @@ export function parseHQBarcode(barcode: string): ParsedHQBarcode {
     }
   }
 
-  // 구분자로 분리
+  // 패턴 1: P{hqCode}Q{qty}S{lot}V{ver} 형식
+  const pMatch = HQ_BARCODE_PATTERN.exec(raw)
+  if (pMatch) {
+    const [, hqCode, qtyStr, lotInfo] = pMatch
+    return {
+      raw,
+      materialCode: hqCode,  // 본사 코드 (682028 등)
+      lotNumber: raw,        // 전체 바코드를 LOT 번호로 사용
+      quantity: parseInt(qtyStr, 10),
+      isValid: true,
+    }
+  }
+
+  // 패턴 2: 콜론(:) 구분자 형식 (KH1200030-22:12000:...)
+  if (raw.includes(':')) {
+    const colonParts = raw.split(':')
+    if (colonParts.length >= 2) {
+      // 첫 부분에서 자재 코드 추출
+      const firstPart = colonParts[0]
+      // 두 번째 부분이 숫자면 수량
+      const qty = parseInt(colonParts[1], 10)
+      return {
+        raw,
+        materialCode: firstPart.replace(/^[A-Z]+/, ''), // 접두사 제거
+        lotNumber: raw,
+        quantity: isNaN(qty) ? undefined : qty,
+        isValid: true,
+      }
+    }
+  }
+
+  // 패턴 3: 구분자로 분리
   const normalized = normalizeSeparator(raw)
   const parts = normalized.split('-').filter(Boolean)
 
   if (parts.length < 2) {
+    // 단순 숫자/문자열 - 그대로 사용
     return {
       raw,
       materialCode: raw,
       lotNumber: raw,
-      isValid: true,  // 단순 문자열도 허용
+      isValid: true,
     }
   }
 
   // 첫 번째 파트가 자재 코드
-  // LOT 관련 파트 찾기
   let materialCode = parts[0]
   let lotNumber = raw
   let quantity: number | undefined

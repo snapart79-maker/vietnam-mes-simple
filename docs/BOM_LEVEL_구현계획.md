@@ -9,7 +9,8 @@
 공정 코드(processCode) 기반 BOM Level 자동 산출 및 계층형 트리 UI 구현
 
 ### 배경
-- 현재: 모든 BOM 자재가 LV=1로 표시 (flat 구조)
+- 현재: 모든 BOM 자재가 LV=1로 
+표시 (flat 구조)
 - 목표: 공정별 계층 구조 (LV0~LV4) 표현
 
 ---

@@ -19,7 +19,11 @@
       "mcp__sequential-thinking__sequentialthinking",
       "Skill(sc:implement)",
       "Bash(npx vitest:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(node -e:*)",
+      "Bash(node analyze-barcode.js:*)",
+      "Bash(node:*)",
+      "Bash(ls:*)"
     ]
   }
 }

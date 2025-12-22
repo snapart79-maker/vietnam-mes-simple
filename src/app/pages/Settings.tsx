@@ -69,7 +69,7 @@ import {
 } from '../components/ui/dropdown-menu'
 import { toast } from 'sonner'
 import { useAuth } from '../context/AuthContext'
-import { useMaterial } from '../context/MaterialContext'
+import { useMaterial, type WireColorMapping } from '../context/MaterialContext'
 import { useProduction } from '../context/ProductionContext'
 // Mock 서비스 사용 (브라우저에서 Prisma 사용 불가)
 import {
@@ -119,9 +119,10 @@ interface LabelSettings {
 
 export const Settings = () => {
   const { user } = useAuth()
-  const { resetMaterials } = useMaterial()
+  const { resetMaterials, loadWireColorMappings, getWireMappingCount } = useMaterial()
   const { resetProduction } = useProduction()
   const [activeTab, setActiveTab] = useState('lines')
+  const [wireMappingCount, setWireMappingCount] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
 
@@ -218,7 +219,41 @@ export const Settings = () => {
     Promise.all([loadLines(), loadBusinessRules(), loadDeviceSettings()]).finally(
       () => setIsLoading(false)
     )
-  }, [loadLines, loadBusinessRules, loadDeviceSettings])
+    // 전선 색상코드 매핑 개수 로드
+    setWireMappingCount(getWireMappingCount())
+  }, [loadLines, loadBusinessRules, loadDeviceSettings, getWireMappingCount])
+
+  // 전선 색상코드 매핑 로드 (기본 파일)
+  const handleLoadDefaultWireMapping = async () => {
+    try {
+      const response = await fetch('/data/wire-color-mapping.json')
+      if (!response.ok) throw new Error('파일을 찾을 수 없습니다.')
+      const mappings: WireColorMapping[] = await response.json()
+      const count = loadWireColorMappings(mappings)
+      setWireMappingCount(count)
+      toast.success(`전선 색상코드 매핑 ${count}개가 로드되었습니다.`)
+    } catch (error) {
+      console.error('Load wire mapping error:', error)
+      toast.error('매핑 파일 로드 실패')
+    }
+  }
+
+  // 전선 색상코드 매핑 로드 (파일 선택)
+  const handleLoadWireMappingFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    try {
+      const text = await file.text()
+      const mappings: WireColorMapping[] = JSON.parse(text)
+      const count = loadWireColorMappings(mappings)
+      setWireMappingCount(count)
+      toast.success(`전선 색상코드 매핑 ${count}개가 로드되었습니다.`)
+    } catch (error) {
+      console.error('Load wire mapping error:', error)
+      toast.error('JSON 파일 파싱 실패')
+    }
+  }
 
   // 라인 저장
   const handleSaveLine = async (e: React.FormEvent) => {
@@ -779,6 +814,46 @@ export const Settings = () => {
 
         {/* Data & Backup Settings */}
         <TabsContent value="data" className="space-y-4 mt-4">
+          {/* 전선 색상코드 매핑 */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Sliders size={20} /> 전선 색상코드 매핑
+              </CardTitle>
+              <CardDescription>
+                경신전선, 케이알로지스 등 전선 공급사의 바코드 색상코드를 MES 품번과 연결합니다.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between p-4 border rounded-lg bg-slate-50">
+                <div className="space-y-1">
+                  <p className="font-medium">현재 매핑 개수</p>
+                  <p className="text-2xl font-bold text-blue-600">{wireMappingCount}개</p>
+                  <p className="text-xs text-slate-500">
+                    색상코드 → MES 품번 매핑 (경신전선, 케이알로지스, 히로세코리아)
+                  </p>
+                </div>
+                <Button onClick={handleLoadDefaultWireMapping}>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  기본 매핑 로드
+                </Button>
+              </div>
+              <div className="space-y-2">
+                <Label>매핑 파일 업로드 (JSON)</Label>
+                <div className="flex gap-2">
+                  <Input
+                    type="file"
+                    accept=".json"
+                    onChange={handleLoadWireMappingFile}
+                  />
+                </div>
+                <p className="text-xs text-slate-500">
+                  * wire-color-mapping.json 형식의 파일을 업로드하세요.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">

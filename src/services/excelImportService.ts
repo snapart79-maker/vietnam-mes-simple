@@ -61,7 +61,11 @@ export function parseExcelFile(file: File): Promise<XLSX.WorkBook> {
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer)
-        const workbook = XLSX.read(data, { type: 'array' })
+        const workbook = XLSX.read(data, {
+          type: 'array',
+          cellDates: true,  // Excel 날짜를 JS Date로 변환
+          dateNF: 'yyyy-mm-dd',  // 날짜 형식
+        })
         resolve(workbook)
       } catch (error) {
         reject(new Error('Excel 파일을 읽을 수 없습니다.'))
@@ -111,9 +115,44 @@ export function sheetToJson<T = Record<string, unknown>>(
   const jsonData = XLSX.utils.sheet_to_json<T>(sheet, {
     header: options.skipFirstRow === false ? 1 : undefined,
     defval: null,
+    raw: false,  // 날짜를 문자열로 변환
+    dateNF: 'yyyy-mm-dd',  // 날짜 형식
   })
 
   return jsonData
+}
+
+/**
+ * Excel 직렬 날짜를 yyyy-mm-dd 형식으로 변환
+ * Excel에서 날짜는 1900-01-01부터의 일수로 저장됨
+ */
+export function excelDateToString(excelDate: number | string | Date | null | undefined): string {
+  if (!excelDate) return ''
+
+  // 이미 문자열인 경우 그대로 반환
+  if (typeof excelDate === 'string') {
+    // yyyy-mm-dd 형식인지 확인
+    if (/^\d{4}-\d{2}-\d{2}/.test(excelDate)) {
+      return excelDate.split('T')[0]  // ISO 형식에서 날짜 부분만 추출
+    }
+    return excelDate
+  }
+
+  // Date 객체인 경우
+  if (excelDate instanceof Date) {
+    return excelDate.toISOString().split('T')[0]
+  }
+
+  // 숫자인 경우 Excel 직렬 날짜로 간주
+  if (typeof excelDate === 'number') {
+    // Excel의 날짜 직렬 번호를 JavaScript Date로 변환
+    // Excel은 1900-01-01을 1로 시작 (1900년 윤년 버그 포함)
+    const excelEpoch = new Date(1899, 11, 30)  // 1899-12-30
+    const date = new Date(excelEpoch.getTime() + excelDate * 24 * 60 * 60 * 1000)
+    return date.toISOString().split('T')[0]
+  }
+
+  return String(excelDate)
 }
 
 /**
@@ -234,6 +273,7 @@ export async function importProducts(
 export interface MaterialImportRow {
   code: string
   name: string
+  hqCode?: string      // 본사 코드 (바코드 스캔용)
   spec?: string
   category: string
   unit: string
@@ -293,6 +333,7 @@ export async function importMaterials(
       result.data?.push({
         code: String(row.code),
         name: String(row.name),
+        hqCode: row.hqCode ? String(row.hqCode) : undefined, // 본사 코드
         spec: row.spec ? String(row.spec) : null,
         category: String(row.category),
         unit: String(row.unit),
@@ -550,11 +591,16 @@ export async function importMaterialReceiving(
       try {
         // 브라우저 환경에서는 Prisma 사용 불가
         // Mock 데이터로 결과 추가
+        // 날짜 형식 변환 (Excel 직렬 날짜 → yyyy-mm-dd)
+        const receivedAtValue = excelDateToString(row.receivedAt as string | number | Date) ||
+          new Date().toISOString().split('T')[0]
+
         result.data?.push({
           materialCode: String(row.materialCode),
+          materialName: row.materialName ? String(row.materialName) : undefined, // 품명 (본사코드)
           lotNumber: String(row.lotNumber),
           quantity: Number(row.quantity),
-          receivedAt: row.receivedAt || new Date().toISOString().split('T')[0],
+          receivedAt: receivedAtValue,
           description: row.description || '',
         })
 
@@ -602,7 +648,10 @@ export const KOREAN_TO_ENGLISH_MAPPING: Record<string, Record<string, string>> =
   },
   material: {
     '자재코드*': 'code',
+    '품번*': 'code',
     '자재명*': 'name',
+    '품명': 'hqCode',     // 입고 데이터의 품명 = 본사코드
+    '본사코드': 'hqCode', // 명시적 본사코드 컬럼
     '분류': 'category',
     '단위': 'unit',
     '설명': 'description',
