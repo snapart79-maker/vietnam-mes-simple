@@ -55,6 +55,8 @@ import {
 import { toast } from 'sonner'
 import { useProduction } from '../context/ProductionContext'
 import { useAuth } from '../context/AuthContext'
+import { useProduct } from '../context/ProductContext'
+import { useBOM } from '../context/BOMContext'
 import { parseBarcode, getProcessName } from '@/services/barcodeService'
 import { getLinesByProcess, type Line } from '@/services/mock/lineService.mock'
 import { BundleDialog, LabelPreviewDialog } from '../components/dialogs'
@@ -74,6 +76,8 @@ interface ScannedItem {
 export const ProcessView = () => {
   const { processId } = useParams<{ processId: string }>()
   const { user } = useAuth()
+  const { products } = useProduct()
+  const { bomGroups, getBOMByProduct } = useBOM()
   const {
     currentLot,
     todayLots,
@@ -103,8 +107,57 @@ export const ProcessView = () => {
   const [scannedItems, setScannedItems] = useState<ScannedItem[]>([])
   const [selectAll, setSelectAll] = useState(false)
 
+  // 작업 선택 상태: 완제품 + 절압착 품번
+  const [selectedProductCode, setSelectedProductCode] = useState('')
+  const [productSearchQuery, setProductSearchQuery] = useState('')
+  const [showProductDropdown, setShowProductDropdown] = useState(false)
+  const [selectedCrimpCode, setSelectedCrimpCode] = useState('')
+  const [showCrimpDropdown, setShowCrimpDropdown] = useState(false)
+  const productInputRef = useRef<HTMLInputElement>(null)
+
   const processCode = processId?.toUpperCase() || 'CA'
   const processName = getProcessName(processCode)
+
+  // 선택한 완제품 정보
+  const selectedProduct = products.find(p => p.code === selectedProductCode)
+
+  // 완제품 필터링 (검색어 기반)
+  const filteredProducts = productSearchQuery.trim()
+    ? products.filter(p =>
+        p.code.toLowerCase().includes(productSearchQuery.toLowerCase()) ||
+        p.name.toLowerCase().includes(productSearchQuery.toLowerCase())
+      )
+    : products
+
+  // 선택한 완제품의 절압착 품번 목록 (BOM LV4 CA)
+  const crimpCodes = React.useMemo(() => {
+    if (!selectedProductCode) return []
+
+    const bomGroup = bomGroups.find(g => g.productCode === selectedProductCode)
+    if (!bomGroup) return []
+
+    // LV4 (CA) 그룹에서 crimpCode 목록 추출
+    const lv4Group = bomGroup.levelGroups.find(lg => lg.level === 4)
+    if (!lv4Group?.crimpGroups) return []
+
+    return lv4Group.crimpGroups.map(cg => cg.crimpCode).filter(code => code !== '(미지정)')
+  }, [selectedProductCode, bomGroups])
+
+  // 완제품 선택 핸들러
+  const handleSelectProduct = (code: string) => {
+    setSelectedProductCode(code)
+    const product = products.find(p => p.code === code)
+    setProductSearchQuery(product ? `${code} - ${product.name}` : code)
+    setShowProductDropdown(false)
+    // 완제품 변경 시 절압착 품번 초기화
+    setSelectedCrimpCode('')
+  }
+
+  // 절압착 품번 선택 핸들러
+  const handleSelectCrimpCode = (code: string) => {
+    setSelectedCrimpCode(code)
+    setShowCrimpDropdown(false)
+  }
 
   // 공정 변경 시 초기화
   useEffect(() => {
@@ -116,6 +169,10 @@ export const ProcessView = () => {
     setDefectQty(0)
     setScannedItems([])
     setSelectAll(false)
+    // 작업 선택 초기화
+    setSelectedProductCode('')
+    setProductSearchQuery('')
+    setSelectedCrimpCode('')
   }, [processCode])
 
   // 라인 목록 로드
@@ -239,6 +296,26 @@ export const ProcessView = () => {
     }
   }
 
+  // 선택 삭제
+  const deleteSelectedItems = () => {
+    const selectedItems = scannedItems.filter(item => item.isSelected)
+    if (selectedItems.length === 0) {
+      toast.error('삭제할 항목을 선택해주세요.')
+      return
+    }
+
+    setScannedItems(prev => {
+      const updated = prev.filter(item => !item.isSelected)
+      if (updated.length > 0) {
+        setSelectAll(updated.every(item => item.isSelected))
+      } else {
+        setSelectAll(false)
+      }
+      return updated
+    })
+    toast.success(`${selectedItems.length}개 항목이 삭제되었습니다.`)
+  }
+
   // 선택된 항목 수
   const selectedCount = scannedItems.filter(item => item.isSelected).length
 
@@ -256,6 +333,19 @@ export const ProcessView = () => {
       return
     }
 
+    // 완제품 선택 검증
+    if (!selectedProductCode) {
+      toast.error('완제품을 선택해주세요.')
+      productInputRef.current?.focus()
+      return
+    }
+
+    // CA 공정일 때 절압착 품번 선택 검증
+    if (processCode === 'CA' && crimpCodes.length > 0 && !selectedCrimpCode) {
+      toast.error('절압착 품번을 선택해주세요.')
+      return
+    }
+
     setIsProcessing(true)
     clearError()
 
@@ -263,15 +353,20 @@ export const ProcessView = () => {
       // 총 수량 계산
       const totalQty = selectedItems.reduce((sum, item) => sum + item.quantity, 0)
 
+      // 선택한 완제품의 ID 찾기
+      const productId = selectedProduct?.id
+
       // 신규 LOT 생성
       const newLot = await createLot({
         processCode,
-        productId: undefined, // TODO: 품번 매핑
+        productId,
         plannedQty: totalQty,
         lineCode: currentLine?.code,
         workerId: user?.id,
         // 투입 자재 정보 (선택된 바코드들)
         inputBarcodes: selectedItems.map(item => item.barcode),
+        // CA 공정일 때 절압착 품번 추가
+        ...(processCode === 'CA' && selectedCrimpCode && { crimpCode: selectedCrimpCode }),
       })
 
       setCurrentLot(newLot)
@@ -282,7 +377,8 @@ export const ProcessView = () => {
       setScannedItems(prev => prev.filter(item => !item.isSelected))
       setSelectAll(false)
 
-      toast.success(`LOT ${newLot.lotNumber} 생성 완료 (${selectedItems.length}개 항목, ${totalQty}EA)`)
+      const crimpInfo = processCode === 'CA' && selectedCrimpCode ? ` [${selectedCrimpCode}]` : ''
+      toast.success(`LOT ${newLot.lotNumber} 생성 완료${crimpInfo} (${selectedItems.length}개 항목, ${totalQty}EA)`)
       refreshTodayLots()
     } catch (err) {
       console.error('Approval error:', err)
@@ -431,6 +527,119 @@ export const ProcessView = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full min-h-[500px]">
         {/* Left Panel: Scan & Scanned Items */}
         <div className="lg:col-span-1 space-y-4 flex flex-col">
+          {/* 작업 선택 섹션: 완제품 + 절압착 품번 */}
+          <Card className="shadow-md border-blue-200 bg-blue-50/30">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Package className="h-4 w-4 text-blue-600" />
+                작업 선택
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {/* 완제품 선택 */}
+              <div className="space-y-1.5 relative">
+                <Label className="text-xs text-slate-600">완제품 품번</Label>
+                <Input
+                  ref={productInputRef}
+                  placeholder="품번 또는 품명 입력..."
+                  value={productSearchQuery}
+                  onChange={(e) => {
+                    setProductSearchQuery(e.target.value)
+                    setShowProductDropdown(true)
+                    // 입력이 변경되면 선택 해제
+                    if (selectedProductCode && e.target.value !== `${selectedProductCode} - ${selectedProduct?.name}`) {
+                      setSelectedProductCode('')
+                      setSelectedCrimpCode('')
+                    }
+                  }}
+                  onFocus={() => setShowProductDropdown(true)}
+                  onBlur={() => setTimeout(() => setShowProductDropdown(false), 200)}
+                  className="h-9 font-mono text-sm"
+                />
+                {/* 완제품 드롭다운 */}
+                {showProductDropdown && filteredProducts.length > 0 && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-48 overflow-auto">
+                    {filteredProducts.slice(0, 20).map(product => (
+                      <button
+                        key={product.id}
+                        type="button"
+                        className={`w-full px-3 py-2 text-left text-sm hover:bg-blue-50 flex justify-between items-center ${
+                          selectedProductCode === product.code ? 'bg-blue-100' : ''
+                        }`}
+                        onMouseDown={() => handleSelectProduct(product.code)}
+                      >
+                        <span className="font-mono text-blue-600">{product.code}</span>
+                        <span className="text-slate-500 truncate ml-2">{product.name}</span>
+                      </button>
+                    ))}
+                    {filteredProducts.length > 20 && (
+                      <div className="px-3 py-2 text-xs text-slate-400 text-center border-t">
+                        외 {filteredProducts.length - 20}개 더...
+                      </div>
+                    )}
+                  </div>
+                )}
+                {products.length === 0 && (
+                  <p className="text-xs text-amber-600">⚠️ 완제품이 등록되지 않았습니다.</p>
+                )}
+              </div>
+
+              {/* CA 공정일 때만 절압착 품번 선택 표시 */}
+              {processCode === 'CA' && selectedProductCode && (
+                <div className="space-y-1.5 relative">
+                  <Label className="text-xs text-slate-600">절압착 품번</Label>
+                  {crimpCodes.length > 0 ? (
+                    <>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full h-9 justify-between font-mono text-sm"
+                        onClick={() => setShowCrimpDropdown(!showCrimpDropdown)}
+                      >
+                        <span className={selectedCrimpCode ? 'text-purple-600' : 'text-slate-400'}>
+                          {selectedCrimpCode || '절압착 품번 선택...'}
+                        </span>
+                        <ChevronDown className="h-4 w-4" />
+                      </Button>
+                      {showCrimpDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-48 overflow-auto">
+                          {crimpCodes.map(code => (
+                            <button
+                              key={code}
+                              type="button"
+                              className={`w-full px-3 py-2 text-left text-sm hover:bg-purple-50 font-mono ${
+                                selectedCrimpCode === code ? 'bg-purple-100 text-purple-700' : ''
+                              }`}
+                              onClick={() => handleSelectCrimpCode(code)}
+                            >
+                              {code}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-xs text-amber-600">⚠️ BOM에 절압착 품번이 없습니다.</p>
+                  )}
+                </div>
+              )}
+
+              {/* 선택 상태 표시 */}
+              {selectedProductCode && (
+                <div className="flex items-center gap-2 pt-1">
+                  <Badge variant="outline" className="bg-blue-100 text-blue-700 border-blue-200">
+                    {selectedProductCode}
+                  </Badge>
+                  {processCode === 'CA' && selectedCrimpCode && (
+                    <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-200">
+                      {selectedCrimpCode}
+                    </Badge>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Scan Section */}
           <Card className="shadow-md border-slate-200">
             <CardHeader className="pb-3 flex flex-row items-center justify-between">
@@ -470,15 +679,25 @@ export const ProcessView = () => {
                 <CardTitle className="text-lg">
                   스캔 목록 ({scannedItems.length})
                 </CardTitle>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={deleteSelectedItems}
+                    disabled={selectedCount === 0}
+                    className="text-orange-500 hover:text-orange-700 hover:bg-orange-50 text-xs px-2"
+                  >
+                    <Trash2 size={12} className="mr-1" />
+                    선택 삭제
+                  </Button>
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={clearAllItems}
                     disabled={scannedItems.length === 0}
-                    className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50 text-xs px-2"
                   >
-                    <Trash2 size={14} className="mr-1" />
+                    <Trash2 size={12} className="mr-1" />
                     전체 삭제
                   </Button>
                 </div>

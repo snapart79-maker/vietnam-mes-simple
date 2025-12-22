@@ -159,10 +159,26 @@ function saveLotMaterials(): void {
 // ============================================
 
 /**
+ * LOT 번호 중복 체크
+ */
+export function isLotExists(lotNumber: string): boolean {
+  return MOCK_STOCKS.some(s => s.lotNumber === lotNumber)
+}
+
+/**
  * 자재 입고 처리 (Mock)
  */
 export async function receiveStock(input: ReceiveStockInput): Promise<ReceiveStockResult> {
   await new Promise((r) => setTimeout(r, 300))
+
+  // 중복 LOT 체크
+  if (isLotExists(input.lotNumber)) {
+    return {
+      success: false,
+      id: 0,
+      error: `LOT ${input.lotNumber}은(는) 이미 등록되어 있습니다.`,
+    }
+  }
 
   const newId = MOCK_STOCKS.length > 0 ? Math.max(...MOCK_STOCKS.map(s => s.id)) + 1 : 1
   const receivedAt = input.receivedAt
@@ -608,7 +624,64 @@ export async function checkBOMAvailability(
 }
 
 // ============================================
-// Data Reset (Mock)
+// Data Delete (Mock)
+// ============================================
+
+/**
+ * 선택한 LOT 재고 삭제
+ */
+export function deleteStockItems(ids: number[]): number {
+  const idsSet = new Set(ids)
+  const beforeCount = MOCK_STOCKS.length
+  MOCK_STOCKS = MOCK_STOCKS.filter(s => !idsSet.has(s.id))
+  const deletedCount = beforeCount - MOCK_STOCKS.length
+
+  if (deletedCount > 0) {
+    saveStocks()
+  }
+
+  return deletedCount
+}
+
+/**
+ * 선택한 입고 이력 삭제
+ */
+export function deleteReceivingRecords(ids: number[]): number {
+  const idsSet = new Set(ids)
+  const beforeCount = mockReceivings.length
+  mockReceivings = mockReceivings.filter(r => !idsSet.has(r.id))
+  const deletedCount = beforeCount - mockReceivings.length
+
+  if (deletedCount > 0) {
+    saveReceivings()
+  }
+
+  return deletedCount
+}
+
+/**
+ * 전체 재고 및 입고 이력 초기화
+ */
+export function resetAllStockData(): { stocks: number; receivings: number; lotMaterials: number } {
+  const result = {
+    stocks: MOCK_STOCKS.length,
+    receivings: mockReceivings.length,
+    lotMaterials: MOCK_LOT_MATERIALS.length,
+  }
+
+  MOCK_STOCKS = []
+  mockReceivings = []
+  MOCK_LOT_MATERIALS = []
+
+  saveStocks()
+  saveReceivings()
+  saveLotMaterials()
+
+  return result
+}
+
+// ============================================
+// Data Reset (Mock) - Legacy
 // ============================================
 
 /**

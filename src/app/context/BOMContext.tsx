@@ -250,18 +250,22 @@ export const BOMProvider = ({ children }: PropsWithChildren) => {
   };
 
   const updateBOMItem = (updatedItem: BOMItem) => {
-    setBomItems(bomItems.map(b => b.id === updatedItem.id ? updatedItem : b));
+    setBomItems(prev => prev.map(b => b.id === updatedItem.id ? updatedItem : b));
   };
 
   const deleteBOMItem = (id: number) => {
-    setBomItems(bomItems.filter(b => b.id !== id));
+    setBomItems(prev => prev.filter(b => b.id !== id));
   };
 
   // 특정 품번의 BOM 전체 삭제
   const deleteBOMByProduct = (productCode: string): number => {
-    const toDelete = bomItems.filter(b => b.productCode === productCode);
-    setBomItems(bomItems.filter(b => b.productCode !== productCode));
-    return toDelete.length;
+    let deletedCount = 0;
+    setBomItems(prev => {
+      const toDelete = prev.filter(b => b.productCode === productCode);
+      deletedCount = toDelete.length;
+      return prev.filter(b => b.productCode !== productCode);
+    });
+    return deletedCount;
   };
 
   // 특정 품번의 BOM 조회

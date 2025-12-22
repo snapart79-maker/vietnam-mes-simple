@@ -84,11 +84,11 @@ export const ProductProvider = ({ children }: PropsWithChildren) => {
   };
 
   const updateProduct = (updatedProd: Product) => {
-    setProducts(products.map(p => p.id === updatedProd.id ? updatedProd : p));
+    setProducts(prev => prev.map(p => p.id === updatedProd.id ? updatedProd : p));
   };
 
   const deleteProduct = (id: number) => {
-    setProducts(products.filter(p => p.id !== id));
+    setProducts(prev => prev.filter(p => p.id !== id));
   };
 
   const resetProducts = () => {

@@ -12,8 +12,7 @@ import {
   TableHeader, 
   TableRow 
 } from '../components/ui/table';
-import { Plus, Search, Edit2, Trash2, MoreHorizontal, FileDown, Upload, FolderTree, Package, Save, ChevronDown, ChevronRight } from 'lucide-react';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu';
+import { Plus, Search, Edit2, Trash2, FileDown, Upload, FolderTree, Package, Save, ChevronDown, ChevronRight } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
 import { Badge } from '../components/ui/badge';
 import { toast } from 'sonner';
@@ -99,8 +98,32 @@ export const MasterData = () => {
   };
 
   const handleDelete = (id: number) => {
+    console.log('[MasterData] handleDelete called with id:', id, 'type:', typeof id);
     deleteMaterial(id);
     toast.success('자재가 삭제되었습니다.');
+  };
+
+  // 직접 삭제 버튼용 (드롭다운 우회)
+  const handleDirectDelete = (id: number, name: string) => {
+    if (window.confirm(`"${name}" 자재를 정말 삭제하시겠습니까?`)) {
+      console.log('[MasterData] handleDirectDelete confirmed for id:', id);
+      deleteMaterial(id);
+      toast.success('자재가 삭제되었습니다.');
+    }
+  };
+
+  const handleDirectDeleteProduct = (id: number, name: string) => {
+    if (window.confirm(`"${name}" 완제품을 정말 삭제하시겠습니까?`)) {
+      deleteProduct(id);
+      toast.success('완제품이 삭제되었습니다.');
+    }
+  };
+
+  const handleDirectDeleteBOM = (productCode: string) => {
+    if (window.confirm(`"${productCode}" BOM 전체를 정말 삭제하시겠습니까?`)) {
+      const count = deleteBOMByProduct(productCode);
+      toast.success(`${count}건의 BOM이 삭제되었습니다.`);
+    }
   };
 
   const handleDownloadTemplate = () => {
@@ -130,15 +153,44 @@ export const MasterData = () => {
         const addedCount = addProducts(productData);
         toast.success(`${addedCount}건이 등록되었습니다.`);
       } else if (type === 'material') {
-        // 자재 일괄 등록 (addMaterials 사용 - React state batching 문제 해결)
+        // 자재 일괄 등록 (품목마스터 양식 - 전체 필드 매핑)
         const materialData = result.data.map((item: unknown) => {
-          const mat = item as { code: string; name: string; spec?: string; category?: string; unit?: string; safeStock?: number; description?: string };
+          const mat = item as {
+            code: string; name: string;
+            supplierCode?: string; pdaCode?: string; hqCode?: string;
+            supplier?: string; customerCode?: string;
+            spec?: string; spec2?: string; spec3?: string;
+            wireMaterial?: string; wireGauge?: string; color?: string;
+            projectCode?: string; category?: string;
+            unit?: string; unitWeight?: number; weightUnit?: string;
+            safeStock?: number; description?: string;
+          };
           return {
             code: mat.code,
             name: mat.name,
+            // 바코드 매칭용
+            supplierCode: mat.supplierCode,
+            pdaCode: mat.pdaCode,
+            hqCode: mat.hqCode,
+            // 공급처
+            supplier: mat.supplier,
+            customerCode: mat.customerCode,
+            // 규격
             spec: mat.spec || '',
-            category: mat.category || '원자재',
+            spec2: mat.spec2,
+            spec3: mat.spec3,
+            // 전선 정보
+            wireMaterial: mat.wireMaterial,
+            wireGauge: mat.wireGauge,
+            color: mat.color,
+            // 분류
+            projectCode: mat.projectCode,
+            category: mat.category || '원재료',
+            // 단위
             unit: mat.unit || 'EA',
+            unitWeight: mat.unitWeight,
+            weightUnit: mat.weightUnit,
+            // 기타
             safeStock: mat.safeStock || 0,
             desc: mat.description || ''
           };
@@ -335,64 +387,84 @@ export const MasterData = () => {
     <Card className="shadow-sm border-slate-200">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
         <div className="space-y-1">
-          <CardTitle className="text-base">자재 목록</CardTitle>
-          <CardDescription>재고 관리의 기준이 되는 자재 정보를 관리합니다.</CardDescription>
+          <CardTitle className="text-base">품목 마스터</CardTitle>
+          <CardDescription>품목마스터 관리 양식 기반 자재 정보 ({materials.length}건)</CardDescription>
         </div>
         <div className="relative w-72">
           <Search className="absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
-          <Input placeholder="자재명 또는 품번 검색..." className="pl-8" />
+          <Input placeholder="품번, 품명, 공급사품번 검색..." className="pl-8" />
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[100px]">자재 품번</TableHead>
-              <TableHead>품명</TableHead>
-              <TableHead>규격/사양</TableHead>
-              <TableHead className="text-center">단위</TableHead>
-              <TableHead>유형</TableHead>
-              <TableHead className="text-right">안전 재고</TableHead>
-              <TableHead>설명</TableHead>
-              <TableHead className="w-[80px]"></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {materials.map((item) => (
-              <TableRow key={item.id}>
-                <TableCell className="font-mono font-medium">{item.code}</TableCell>
-                <TableCell>{item.name}</TableCell>
-                <TableCell className="text-slate-500">{item.spec}</TableCell>
-                <TableCell className="text-center">
-                  <Badge variant="outline" className="font-normal">{item.unit}</Badge>
-                </TableCell>
-                <TableCell>{item.category}</TableCell>
-                <TableCell className="text-right font-medium text-blue-600">
-                  {item.safeStock.toLocaleString()}
-                </TableCell>
-                <TableCell className="text-slate-500 truncate max-w-[150px]">{item.desc}</TableCell>
-                <TableCell>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" className="h-8 w-8 p-0">
-                        <span className="sr-only">Open menu</span>
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => handleEdit(item)}>
-                        <Edit2 className="mr-2 h-4 w-4" /> 정보 수정
-                      </DropdownMenuItem>
-                      <DropdownMenuItem className="text-red-600" onClick={() => handleDelete(item.id)}>
-                        <Trash2 className="mr-2 h-4 w-4" /> 삭제
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TableCell>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-slate-50">
+                <TableHead className="w-[100px] text-xs">경림품번</TableHead>
+                <TableHead className="text-xs">품명</TableHead>
+                <TableHead className="text-xs">공급사품번</TableHead>
+                <TableHead className="text-xs">PDA품번</TableHead>
+                <TableHead className="text-xs">공급처</TableHead>
+                <TableHead className="text-xs">규격</TableHead>
+                <TableHead className="text-xs text-center">색상</TableHead>
+                <TableHead className="text-xs text-center">단위</TableHead>
+                <TableHead className="text-xs">품목유형</TableHead>
+                <TableHead className="w-[100px] text-center">작업</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {materials.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={10} className="text-center py-8 text-slate-400">
+                    등록된 자재가 없습니다. 엑셀 업로드로 품목마스터를 등록하세요.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                materials.map((item) => (
+                  <TableRow key={item.id} className="hover:bg-slate-50">
+                    <TableCell className="font-mono text-xs font-medium text-blue-600">{item.code}</TableCell>
+                    <TableCell className="text-xs max-w-[150px] truncate" title={item.name}>{item.name}</TableCell>
+                    <TableCell className="font-mono text-xs text-slate-600">{item.supplierCode || '-'}</TableCell>
+                    <TableCell className="font-mono text-xs text-slate-600">{item.pdaCode || '-'}</TableCell>
+                    <TableCell className="text-xs text-slate-500 max-w-[100px] truncate" title={item.supplier}>{item.supplier || '-'}</TableCell>
+                    <TableCell className="text-xs text-slate-500">{item.spec || '-'}</TableCell>
+                    <TableCell className="text-center">
+                      {item.color && (
+                        <Badge variant="outline" className="text-xs font-normal">{item.color}</Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <Badge variant="secondary" className="text-xs font-normal">{item.unit}</Badge>
+                    </TableCell>
+                    <TableCell className="text-xs">{item.category || '원재료'}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center justify-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 hover:bg-blue-50"
+                          onClick={() => handleEdit(item)}
+                          title="정보 수정"
+                        >
+                          <Edit2 className="h-4 w-4 text-blue-600" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 hover:bg-red-50"
+                          onClick={() => handleDirectDelete(item.id, item.name || item.code)}
+                          title="삭제"
+                        >
+                          <Trash2 className="h-4 w-4 text-red-600" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
       </CardContent>
     </Card>
   );
@@ -419,7 +491,7 @@ export const MasterData = () => {
               <TableHead className="text-center">유형</TableHead>
               <TableHead>설명</TableHead>
               <TableHead>등록일</TableHead>
-              <TableHead className="w-[80px]"></TableHead>
+              <TableHead className="w-[100px] text-center">작업</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -443,22 +515,26 @@ export const MasterData = () => {
                   <TableCell className="text-slate-500 truncate max-w-[200px]">{item.description || '-'}</TableCell>
                   <TableCell className="text-slate-500">{item.regDate}</TableCell>
                   <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" className="h-8 w-8 p-0">
-                          <span className="sr-only">Open menu</span>
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => handleEditProduct(item)}>
-                          <Edit2 className="mr-2 h-4 w-4" /> 정보 수정
-                        </DropdownMenuItem>
-                        <DropdownMenuItem className="text-red-600" onClick={() => handleDeleteProduct(item.id)}>
-                          <Trash2 className="mr-2 h-4 w-4" /> 삭제
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    <div className="flex items-center justify-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 hover:bg-blue-50"
+                        onClick={() => handleEditProduct(item)}
+                        title="정보 수정"
+                      >
+                        <Edit2 className="h-4 w-4 text-blue-600" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 hover:bg-red-50"
+                        onClick={() => handleDirectDeleteProduct(item.id, item.name || item.code)}
+                        title="삭제"
+                      >
+                        <Trash2 className="h-4 w-4 text-red-600" />
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))
@@ -540,25 +616,18 @@ export const MasterData = () => {
                           <Badge variant="secondary" className="font-normal">
                             {group.levelGroups.length}개 공정 / {group.totalItems}개 자재
                           </Badge>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                              <Button variant="ghost" className="h-8 w-8 p-0">
-                                <MoreHorizontal className="h-4 w-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem
-                                className="text-red-600"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const count = deleteBOMByProduct(group.productCode);
-                                  toast.success(`${group.productCode} BOM ${count}건이 삭제되었습니다.`);
-                                }}
-                              >
-                                <Trash2 className="mr-2 h-4 w-4" /> 이 품번 BOM 삭제
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0 hover:bg-red-50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDirectDeleteBOM(group.productCode);
+                            }}
+                            title="이 품번 BOM 전체 삭제"
+                          >
+                            <Trash2 className="h-4 w-4 text-red-500" />
+                          </Button>
                         </div>
                       </button>
 

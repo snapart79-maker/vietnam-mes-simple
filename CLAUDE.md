@@ -147,19 +147,55 @@ function MyComponent() {
 
 ## 자재(Material) 데이터 구조
 
+품목마스터 관리 양식 기반 (20개 필드):
+
 ```typescript
 interface Material {
-  id: string
-  code: string          // 자재 코드
-  name: string          // 자재명
-  spec: string          // 규격
-  category: string      // 분류
-  unit: string          // 단위
-  stock: number         // 현재고
-  safeStock: number     // 안전재고
-  status: 'good' | 'warning' | 'danger' | 'exhausted'
+  id: number
+  // === 핵심 식별 ===
+  code: string           // 경림품번 (MES 내부 품번)
+  name: string           // 품명 (바코드 매칭용)
+  // === 바코드 매칭용 ===
+  supplierCode?: string  // 원자재 공급사 품번
+  pdaCode?: string       // PDA 확인 품번
+  hqCode?: string        // 본사 코드 (레거시)
+  // === 공급처 ===
+  supplier?: string      // 원자재-공급처
+  customerCode?: string  // 출하 고객품번
+  // === 규격 ===
+  spec: string           // 규격1
+  spec2?: string         // 규격2
+  spec3?: string         // 규격3
+  // === 전선 정보 ===
+  wireMaterial?: string  // 전선재질
+  wireGauge?: string     // 전선 굵기
+  color?: string         // 색상
+  // === 분류 ===
+  projectCode?: string   // 프로젝트코드
+  category: string       // 품목유형 (원재료)
+  // === 단위 ===
+  unit: string           // 단위 (EA, M)
+  unitWeight?: number    // 단위중량
+  weightUnit?: string    // 중량단위 (KG)
+  // === 재고 ===
+  stock: number          // 현재고
+  safeStock: number      // 안전재고
 }
 ```
+
+**Excel Import 컬럼 매핑:**
+
+| Excel 컬럼 | Material 필드 | 바코드 매칭 |
+|------------|---------------|-------------|
+| 경림품번 | `code` | ✅ |
+| 품명 | `name` | ✅ |
+| 원자재 공급사 품번 | `supplierCode` | ✅ |
+| PDA 확인 품번 | `pdaCode` | ✅ |
+| 원자재-공급처 | `supplier` | |
+| 규격1 | `spec` | |
+| 색상 | `color` | |
+| 품목유형 | `category` | |
+| 단위 | `unit` | |
 
 ## Import 별칭
 
@@ -304,29 +340,41 @@ const parsed = parseBarcode('CAP001Q100-C241220-0001')
 // { version: 2, processCode: 'CA', productCode: 'P001', quantity: 100, ... }
 ```
 
-### 본사 바코드 매칭
+### 본사/생산처 바코드 매칭
 
-본사 바코드에서 추출한 코드로 자재를 찾는 다단계 검색:
+바코드에서 추출한 코드로 자재를 찾는 **15단계 검색** (품목마스터 관리 양식 기반):
 
-| 순서 | 검색 방법 | 대상 공급사 |
-|------|-----------|-------------|
-| 1 | hqCode 정확 일치 | 한국단자공업, 우주일렉트로닉스 등 (48%) |
-| 2 | code(품번) 정확 일치 | 금호에이치티, 신화산업 등 (27%) |
-| 3 | name 정확 일치 | 하위 호환성 |
-| 4 | 전선 색상코드 매핑 | 경신전선, 케이알로지스, 히로세코리아 (23%) |
-| 5 | 정규화 비교 | 대시/공백 제거 (660480K7 vs 660480-K7) |
-| 6 | hqCode 접두사 일치 | 접미사 붙은 경우 |
-| 7 | hqCode 접미사 일치 | MG646390-5 → 646390-5 |
-| 8 | 품명에 코드 포함 | 사마스전자 (품명에 코드 포함) |
-| 9 | 정규화 부분 일치 | 기타 예외 케이스 |
+| 순서 | 검색 방법 | 대상 패턴 |
+|------|-----------|-----------|
+| **1** | **pdaCode 정확 일치** | **PDA 확인 품번 (가장 신뢰도 높음)** |
+| **2** | **supplierCode 정확 일치** | **원자재 공급사 품번** |
+| **3** | **name 정확 일치** | **품명 (생산처 바코드 대응)** |
+| 4 | code 정확 일치 | 경림품번 |
+| 5 | hqCode 정확 일치 | 본사 코드 (레거시) |
+| 6 | 전선 색상코드 매핑 | 경신전선, 케이알로지스 (976개 매핑) |
+| 7 | pdaCode 정규화 | 대시/공백 제거 비교 |
+| 8 | supplierCode 정규화 | 대시/공백 제거 비교 |
+| 9 | name 정규화 | 대시/공백 제거 비교 |
+| 10 | code 정규화 | 대시/공백 제거 비교 |
+| 11 | hqCode 정규화 | 대시/공백 제거 비교 |
+| 12 | pdaCode 부분 일치 | 코드 포함 검색 |
+| 13 | supplierCode 부분 일치 | 코드 포함 검색 |
+| 14 | name 포함 검색 | 품명에 코드 포함 |
+| 15 | hqCode/정규화 부분 일치 | 기타 예외 케이스 |
+
+**생산처 바코드 패턴:**
+- 바코드: `PPB625-03027Q500S25090191`
+- 추출 코드: `PB625-03027`
+- MES 자재: code=`250-351201`, **name=`PB625-03027`**
+- 3단계에서 품명으로 매칭됨
 
 ```typescript
 import { useMaterial } from '@/app/context/MaterialContext'
 
 const { getMaterialByHQCode } = useMaterial()
 
-// 바코드에서 추출한 코드로 자재 검색
-const material = getMaterialByHQCode('682028')  // 다단계 검색
+// 바코드에서 추출한 코드로 자재 검색 (15단계)
+const material = getMaterialByHQCode('PB625-03027')  // name으로 매칭
 ```
 
 ### 전선 색상코드 매핑
@@ -755,10 +803,132 @@ winget install PostgreSQL.PostgreSQL.17
 
 ---
 
+---
+
+## 2025-12-22 품목마스터 관리 양식 적용 (상세)
+
+### 배경
+- 생산처 바코드 스캔 시 매칭 실패 (PB625-03027, 632969-5 등)
+- 기존 hqCode 중심 매칭에서 품명(name) 기반 매칭 필요
+- 실제 운영 중인 "품목마스터 관리.xlsx" 양식 (4,885건) 기반으로 시스템 통일
+
+### 수정 파일
+
+#### 1. MaterialContext.tsx (바코드 매칭 핵심)
+**경로**: `src/app/context/MaterialContext.tsx`
+
+**Material 타입 확장** (10 → 20 필드):
+```typescript
+interface Material {
+  // 핵심 식별
+  code: string           // 경림품번 (예: 250-351201)
+  name: string           // 품명 (예: PB625-03027) - 바코드 매칭용!
+
+  // 바코드 매칭용 (신규)
+  supplierCode?: string  // 원자재 공급사 품번
+  pdaCode?: string       // PDA 확인 품번
+  hqCode?: string        // 본사 코드 (레거시)
+
+  // 공급처 정보 (신규)
+  supplier?: string      // 원자재-공급처
+  customerCode?: string  // 출하 고객품번
+
+  // 규격 (확장)
+  spec: string           // 규격1
+  spec2?: string         // 규격2
+  spec3?: string         // 규격3
+
+  // 전선 정보 (신규)
+  wireMaterial?: string  // 전선재질
+  wireGauge?: string     // 전선 굵기
+  color?: string         // 색상
+
+  // 분류 (신규)
+  projectCode?: string   // 프로젝트코드 (주자재/부자재)
+  category: string       // 품목유형
+
+  // 단위 (확장)
+  unit: string
+  unitWeight?: number    // 단위중량
+  weightUnit?: string    // 중량단위 (KG)
+}
+```
+
+**getMaterialByHQCode() 15단계 검색**:
+| 단계 | 검색 방법 | 용도 |
+|------|-----------|------|
+| 1 | pdaCode 정확 일치 | PDA 바코드 (최우선) |
+| 2 | supplierCode 정확 일치 | 공급사 바코드 |
+| 3 | name 정확 일치 | 생산처 바코드 (품명=코드) |
+| 4 | code 정확 일치 | 경림품번 |
+| 5 | hqCode 정확 일치 | 본사 코드 |
+| 6 | 전선 색상코드 매핑 | 경신전선 등 (976개) |
+| 7-11 | 정규화 일치 | 대시/공백 제거 비교 |
+| 12-15 | 부분 일치 | 포함 검색 |
+
+#### 2. excelImportService.ts (Import/템플릿)
+**경로**: `src/services/excelImportService.ts`
+
+**MaterialImportRow 타입**: 20개 필드 정의
+
+**한글 헤더 매핑** (KOREAN_TO_ENGLISH_MAPPING):
+```typescript
+material: {
+  '경림품번': 'code',
+  '품명': 'name',
+  '원자재 공급사 품번': 'supplierCode',
+  'PDA 확인 품번': 'pdaCode',
+  '원자재-공급처': 'supplier',
+  '규격1': 'spec',
+  '색상': 'color',
+  '품목유형': 'category',
+  // ... 17개 컬럼 매핑
+}
+```
+
+**템플릿 다운로드** (품목마스터.xlsx):
+- 시트명: '품목마스터'
+- 17개 컬럼: 프로젝트코드, 경림품번, 품명, 출하고객품번, 원자재공급사품번, PDA확인품번, 원자재-공급처, 규격1~3, 전선재질, 전선굵기, 색상, 품목유형, 단위, 단위중량, 중량단위
+- 예제 데이터 3건 (한국단자공업, 경신전선, 우주일렉트로닉스)
+- 안내 시트: 바코드 매칭 필드 설명 포함
+
+#### 3. MasterData.tsx (UI 테이블)
+**경로**: `src/app/pages/MasterData.tsx`
+
+**renderMaterialTable() 컬럼**:
+| 컬럼 | 필드 | 설명 |
+|------|------|------|
+| 경림품번 | code | 파란색 폰트 |
+| 품명 | name | 최대 150px |
+| 공급사품번 | supplierCode | - |
+| PDA품번 | pdaCode | - |
+| 공급처 | supplier | 최대 100px |
+| 규격 | spec | - |
+| 색상 | color | Badge |
+| 단위 | unit | Badge |
+| 품목유형 | category | - |
+
+**handleImportComplete()**: 전체 필드 매핑 처리
+
+### 테스트 시나리오
+
+1. **양식 다운로드**: 기초자료 → 자재관리 → "양식" 버튼 → 품목마스터.xlsx 다운로드
+2. **업로드**: "업로드" 버튼 → 품목마스터 관리.xlsx 선택 → 4,885건 등록
+3. **바코드 스캔**:
+   - PB625-03027 → name 일치 → 250-351201 자재 매칭
+   - 632969-5 → name 일치 → 해당 자재 매칭
+   - 682028 → pdaCode 일치 → 250-8668 자재 매칭
+
+---
+
 ## 변경 이력
 
 | 날짜 | 내용 |
 |------|------|
+| 2025-12-22 | 공정 모니터링 개선 (ProcessView.tsx: 완제품 선택 자동완성, CA 절압착 품번 선택, 선택 삭제 버튼, 승인 시 검증 로직) |
+| 2025-12-22 | 자재 재고 삭제 기능 (MaterialStock.tsx: 전체 삭제 버튼, stockService.mock.ts: deleteStockItems/deleteReceivingRecords/resetAllStockData 함수) |
+| 2025-12-22 | 품목마스터 양식 템플릿 변경 (17개 컬럼, 바코드 매칭 안내, 품목마스터.xlsx) |
+| 2025-12-22 | 품목마스터 관리 양식 적용 (Material 20필드 확장, 15단계 매칭, Excel Import/UI 개선) |
 | 2025-12-22 | 전선 색상코드 매핑 (경신전선/케이알로지스 976개 매핑, WireColorMapping 타입, 설정 페이지 로드 UI) |
 | 2025-12-22 | 바코드 매칭 개선 (9단계 검색: hqCode→code→name→wireMapping→정규화→부분일치, 76.1% 매칭률) |
 | 2025-12-22 | 본사 바코드-자재 매핑 기능 (hqCode 필드 추가, parseHQBarcode 개선, getMaterialByHQCode 함수) |

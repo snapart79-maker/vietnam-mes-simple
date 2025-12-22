@@ -1,18 +1,39 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, PropsWithChildren, useMemo } from 'react';
 
-// 자재 데이터 타입 정의 (MasterData와 MaterialStock의 필드 통합)
+// 자재 데이터 타입 정의 (품목마스터 관리 양식 기반)
 export interface Material {
   id: number;
-  code: string;       // MES 내부 품번 (예: 250-1235)
-  name: string;       // 자재명
-  hqCode?: string;    // 본사 코드 (예: 682028) - 바코드 스캔용
-  spec: string;       // 규격
-  category: string;   // 분류 (자재 유형)
-  unit: string;       // 단위
-  stock: number;      // 현재고
-  safeStock: number;  // 안전 재고
-  desc: string;       // 설명/비고
-  regDate: string;    // 등록일
+  // === 핵심 식별 필드 ===
+  code: string;           // 경림품번 (MES 내부 품번, 예: 250-351201)
+  name: string;           // 품명 (예: PB625-03027) - 바코드 매칭용
+  // === 바코드 매칭용 필드 ===
+  supplierCode?: string;  // 원자재 공급사 품번 (바코드 매칭용)
+  pdaCode?: string;       // PDA 확인 품번 (바코드 매칭용)
+  hqCode?: string;        // 본사 코드 (레거시 호환)
+  // === 공급처 정보 ===
+  supplier?: string;      // 원자재-공급처 (예: 한국단자공업, 케이유엠두서)
+  customerCode?: string;  // 출하 고객품번
+  // === 규격 정보 ===
+  spec: string;           // 규격1
+  spec2?: string;         // 규격2
+  spec3?: string;         // 규격3
+  // === 전선 정보 ===
+  wireMaterial?: string;  // 전선재질
+  wireGauge?: string;     // 전선 굵기
+  color?: string;         // 색상
+  // === 분류 정보 ===
+  projectCode?: string;   // 프로젝트코드 (주자재/부자재)
+  category: string;       // 품목유형 (원재료/반제품)
+  // === 단위/중량 ===
+  unit: string;           // 단위 (EA, M 등)
+  unitWeight?: number;    // 단위중량
+  weightUnit?: string;    // 중량단위 (KG)
+  // === 재고 관리 ===
+  stock: number;          // 현재고
+  safeStock: number;      // 안전 재고
+  // === 기타 ===
+  desc: string;           // 설명/비고
+  regDate: string;        // 등록일
   status?: 'good' | 'warning' | 'danger' | 'exhausted'; // UI용 상태 (계산됨)
 }
 
@@ -144,11 +165,17 @@ export const MaterialProvider = ({ children }: PropsWithChildren) => {
   };
 
   const updateMaterial = (updatedMat: Material) => {
-    setMaterials(materials.map(m => m.id === updatedMat.id ? updatedMat : m));
+    setMaterials(prev => prev.map(m => m.id === updatedMat.id ? updatedMat : m));
   };
 
   const deleteMaterial = (id: number) => {
-    setMaterials(materials.filter(m => m.id !== id));
+    console.log('[MaterialContext] deleteMaterial called with id:', id);
+    setMaterials(prev => {
+      console.log('[MaterialContext] prev materials count:', prev.length);
+      const filtered = prev.filter(m => m.id !== id);
+      console.log('[MaterialContext] after filter count:', filtered.length);
+      return filtered;
+    });
   };
 
   const resetMaterials = () => {
@@ -174,55 +201,88 @@ export const MaterialProvider = ({ children }: PropsWithChildren) => {
   };
 
   // 바코드에서 추출한 코드로 자재 조회 (다단계 검색)
-  // 공급사별 패턴:
-  // - 한국단자공업 등: 바코드에 품명(hqCode) 포함
-  // - 금호에이치티 등: 바코드에 품번(code) 포함
-  // - 한국단자공업 일부: 대시/접두사 차이 (660480K7 vs 660480-K7)
-  // - 사마스전자: 품명에 바코드 코드 포함
-  // - 경신전선/케이알로지스: 전선 색상코드 → MES 품번 매핑
+  // 검색 우선순위: pdaCode > supplierCode > name > code > hqCode > 정규화/부분일치
   const getMaterialByHQCode = (extractedCode: string): Material | undefined => {
     // 정규화 함수: 대시, 공백 제거하고 소문자로
     const normalize = (s: string) => s.replace(/[-\s]/g, '').toLowerCase();
     const normalizedCode = normalize(extractedCode);
+    const trimmedCode = extractedCode.trim();
 
-    // 1. hqCode 필드로 정확히 일치
-    const byHQCode = materials.find(m => m.hqCode === extractedCode);
-    if (byHQCode) return byHQCode;
+    // === 1차: 정확 일치 (trim 적용) ===
 
-    // 2. code 필드로 정확히 일치 (품번이 바코드에 있는 패턴)
-    const byCode = materials.find(m => m.code === extractedCode);
+    // 1. pdaCode 일치 (PDA 확인 품번 - 가장 신뢰도 높음)
+    const byPdaCode = materials.find(m => m.pdaCode?.trim() === trimmedCode);
+    if (byPdaCode) return byPdaCode;
+
+    // 2. supplierCode 일치 (원자재 공급사 품번)
+    const bySupplierCode = materials.find(m => m.supplierCode?.trim() === trimmedCode);
+    if (bySupplierCode) return bySupplierCode;
+
+    // 3. name 일치 (품명 - 생산처 바코드 대응)
+    const byNameExact = materials.find(m => m.name?.trim() === trimmedCode);
+    if (byNameExact) return byNameExact;
+
+    // 4. code 일치 (경림품번)
+    const byCode = materials.find(m => m.code?.trim() === trimmedCode);
     if (byCode) return byCode;
 
-    // 3. name 필드로 정확히 일치 (하위 호환성)
-    const byName = materials.find(m => m.name === extractedCode);
-    if (byName) return byName;
+    // 5. hqCode 일치 (본사 코드 - 레거시)
+    const byHQCode = materials.find(m => m.hqCode?.trim() === trimmedCode);
+    if (byHQCode) return byHQCode;
 
-    // 4. 전선 색상코드 매핑 조회 (경신전선, 케이알로지스 등)
+    // === 2차: 전선 색상코드 매핑 ===
+
+    // 6. 전선 색상코드 매핑 조회 (경신전선, 케이알로지스 등)
     const mappedMesCode = wireCodeToMesCode.get(extractedCode);
     if (mappedMesCode) {
       const byMappedCode = materials.find(m => m.code === mappedMesCode);
       if (byMappedCode) return byMappedCode;
     }
 
-    // 5. 정규화 비교 (대시 차이: 660480K7 vs 660480-K7)
+    // === 3차: 정규화 일치 (대시/공백 제거) ===
+
+    // 7. pdaCode 정규화
+    const byNormalizedPda = materials.find(m => m.pdaCode && normalize(m.pdaCode) === normalizedCode);
+    if (byNormalizedPda) return byNormalizedPda;
+
+    // 8. supplierCode 정규화
+    const byNormalizedSupplier = materials.find(m => m.supplierCode && normalize(m.supplierCode) === normalizedCode);
+    if (byNormalizedSupplier) return byNormalizedSupplier;
+
+    // 9. name 정규화
+    const byNormalizedName = materials.find(m => m.name && normalize(m.name) === normalizedCode);
+    if (byNormalizedName) return byNormalizedName;
+
+    // 10. code 정규화
+    const byNormalizedCode = materials.find(m => m.code && normalize(m.code) === normalizedCode);
+    if (byNormalizedCode) return byNormalizedCode;
+
+    // 11. hqCode 정규화
     const byNormalizedHQ = materials.find(m => m.hqCode && normalize(m.hqCode) === normalizedCode);
     if (byNormalizedHQ) return byNormalizedHQ;
 
-    // 6. hqCode 부분 일치 (접미사: 655708-3 vs 655708-3(PA6+G15)KET)
-    const byPartialHQ = materials.find(m => m.hqCode && m.hqCode.startsWith(extractedCode));
-    if (byPartialHQ) return byPartialHQ;
+    // === 4차: 부분 일치 ===
 
-    // 7. hqCode 접두사 제거 일치 (MG646390-5 → 646390-5)
-    const byHQSuffix = materials.find(m => m.hqCode && m.hqCode.endsWith(extractedCode));
-    if (byHQSuffix) return byHQSuffix;
+    // 12. pdaCode/supplierCode 부분 일치
+    const byPartialPda = materials.find(m => m.pdaCode && m.pdaCode.includes(extractedCode));
+    if (byPartialPda) return byPartialPda;
 
-    // 8. 품명에서 바코드 코드 포함 검색 (사마스전자: 품명에 "(31100-LX100)" 포함)
+    const byPartialSupplier = materials.find(m => m.supplierCode && m.supplierCode.includes(extractedCode));
+    if (byPartialSupplier) return byPartialSupplier;
+
+    // 13. name 포함 검색
     const byNameContains = materials.find(m => m.name && m.name.includes(extractedCode));
     if (byNameContains) return byNameContains;
 
-    // 9. 정규화된 hqCode 부분 일치
+    // 14. hqCode 부분 일치 (접두사/접미사)
+    const byPartialHQ = materials.find(m => m.hqCode && (m.hqCode.startsWith(extractedCode) || m.hqCode.endsWith(extractedCode)));
+    if (byPartialHQ) return byPartialHQ;
+
+    // 15. 정규화된 부분 일치
     const byNormalizedPartial = materials.find(m =>
-      m.hqCode && normalize(m.hqCode).includes(normalizedCode)
+      (m.pdaCode && normalize(m.pdaCode).includes(normalizedCode)) ||
+      (m.supplierCode && normalize(m.supplierCode).includes(normalizedCode)) ||
+      (m.hqCode && normalize(m.hqCode).includes(normalizedCode))
     );
     if (byNormalizedPartial) return byNormalizedPartial;
 

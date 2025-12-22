@@ -270,13 +270,34 @@ export async function importProducts(
 // Material Import
 // ============================================
 
+// 품목마스터 관리 양식 기반 자재 Import 타입
 export interface MaterialImportRow {
-  code: string
-  name: string
-  hqCode?: string      // 본사 코드 (바코드 스캔용)
-  spec?: string
-  category: string
-  unit: string
+  // === 핵심 필드 ===
+  code: string              // 경림품번
+  name: string              // 품명
+  // === 바코드 매칭용 ===
+  supplierCode?: string     // 원자재 공급사 품번
+  pdaCode?: string          // PDA 확인 품번
+  hqCode?: string           // 본사 코드 (레거시)
+  // === 공급처 ===
+  supplier?: string         // 원자재-공급처
+  customerCode?: string     // 출하 고객품번
+  // === 규격 ===
+  spec?: string             // 규격1
+  spec2?: string            // 규격2
+  spec3?: string            // 규격3
+  // === 전선 정보 ===
+  wireMaterial?: string     // 전선재질
+  wireGauge?: string        // 전선 굵기
+  color?: string            // 색상
+  // === 분류 ===
+  projectCode?: string      // 프로젝트코드
+  category: string          // 품목유형
+  // === 단위 ===
+  unit: string              // 단위
+  unitWeight?: number       // 단위중량
+  weightUnit?: string       // 중량단위
+  // === 기타 ===
   safeStock?: number
   description?: string
 }
@@ -318,27 +339,47 @@ export async function importMaterials(
       const row = typedData[i]
       const rowNum = i + 2
 
-      // 필수 필드 검사
-      if (!row.code || !row.name || !row.category || !row.unit) {
+      // 필수 필드 검사 (경림품번, 품명만 필수)
+      if (!row.code || !row.name) {
         result.errors.push({
           row: rowNum,
-          message: '품번, 품명, 분류, 단위는 필수입니다.',
+          message: '경림품번(code)과 품명(name)은 필수입니다.',
         })
         result.skippedRows++
         continue
       }
 
       // 브라우저 환경에서는 Prisma 사용 불가
-      // 파싱된 데이터를 결과에 추가
+      // 파싱된 데이터를 결과에 추가 (품목마스터 양식 전체 필드)
       result.data?.push({
+        // 핵심 필드
         code: String(row.code),
         name: String(row.name),
-        hqCode: row.hqCode ? String(row.hqCode) : undefined, // 본사 코드
-        spec: row.spec ? String(row.spec) : null,
-        category: String(row.category),
-        unit: String(row.unit),
+        // 바코드 매칭용
+        supplierCode: row.supplierCode ? String(row.supplierCode) : undefined,
+        pdaCode: row.pdaCode ? String(row.pdaCode) : undefined,
+        hqCode: row.hqCode ? String(row.hqCode) : undefined,
+        // 공급처
+        supplier: row.supplier ? String(row.supplier) : undefined,
+        customerCode: row.customerCode ? String(row.customerCode) : undefined,
+        // 규격
+        spec: row.spec ? String(row.spec) : '',
+        spec2: row.spec2 ? String(row.spec2) : undefined,
+        spec3: row.spec3 ? String(row.spec3) : undefined,
+        // 전선 정보
+        wireMaterial: row.wireMaterial ? String(row.wireMaterial) : undefined,
+        wireGauge: row.wireGauge ? String(row.wireGauge) : undefined,
+        color: row.color ? String(row.color) : undefined,
+        // 분류
+        projectCode: row.projectCode ? String(row.projectCode) : undefined,
+        category: row.category ? String(row.category) : '원재료',
+        // 단위
+        unit: row.unit ? String(row.unit) : 'EA',
+        unitWeight: row.unitWeight ? Number(row.unitWeight) : undefined,
+        weightUnit: row.weightUnit ? String(row.weightUnit) : undefined,
+        // 기타
         safeStock: row.safeStock ? Number(row.safeStock) : 0,
-        description: row.description ? String(row.description) : null,
+        description: row.description ? String(row.description) : '',
       })
 
       result.importedRows++
@@ -647,13 +688,33 @@ export const KOREAN_TO_ENGLISH_MAPPING: Record<string, Record<string, string>> =
     '설명': 'description',
   },
   material: {
+    // 품목마스터 관리 양식 (20개 컬럼)
+    '선택': '_select',           // 무시
+    '프로젝트코드': 'projectCode',
+    '경림품번': 'code',
+    '품명': 'name',
+    '출하 고객품번': 'customerCode',
+    '원자재 공급사 품번': 'supplierCode',
+    '원자재 공급사 품명': '_supplierName',  // 참조용 (무시)
+    'PDA 확인 품번': 'pdaCode',
+    '원자재-공급처': 'supplier',
+    '도면 SL원자재 품번': '_drawingCode',   // 무시
+    '규격1': 'spec',
+    '규격2': 'spec2',
+    '규격3': 'spec3',
+    '전선재질': 'wireMaterial',
+    '전선 굵기': 'wireGauge',
+    '색상': 'color',
+    '품목유형': 'category',
+    '단위중량': 'unitWeight',
+    '단위': 'unit',
+    '중량단위': 'weightUnit',
+    // 레거시 호환
     '자재코드*': 'code',
     '품번*': 'code',
     '자재명*': 'name',
-    '품명': 'hqCode',     // 입고 데이터의 품명 = 본사코드
-    '본사코드': 'hqCode', // 명시적 본사코드 컬럼
+    '본사코드': 'hqCode',
     '분류': 'category',
-    '단위': 'unit',
     '설명': 'description',
   },
   bom: {
@@ -706,40 +767,72 @@ export function downloadImportTemplate(
       ],
     },
     material: {
-      sheetName: '자재 마스터',
-      headers: ['자재코드*', '자재명*', '분류', '단위', '설명'],
+      sheetName: '품목마스터',
+      headers: [
+        '프로젝트코드', '경림품번', '품명', '출하 고객품번',
+        '원자재 공급사 품번', 'PDA 확인 품번', '원자재-공급처',
+        '규격1', '규격2', '규격3',
+        '전선재질', '전선 굵기', '색상',
+        '품목유형', '단위', '단위중량', '중량단위'
+      ],
       examples: [
-        { '자재코드*': 'T-001', '자재명*': '단자 110타입', '분류': '단자', '단위': 'EA', '설명': '110 시리즈 단자' },
-        { '자재코드*': 'T-002', '자재명*': '단자 250타입', '분류': '단자', '단위': 'EA', '설명': '250 시리즈 단자' },
-        { '자재코드*': 'W-001', '자재명*': '전선 AVS 0.5sq', '분류': '전선', '단위': 'M', '설명': '자동차용 전선 0.5sq' },
-        { '자재코드*': 'W-002', '자재명*': '전선 AVS 0.85sq', '분류': '전선', '단위': 'M', '설명': '자동차용 전선 0.85sq' },
-        { '자재코드*': 'S-001', '자재명*': '방수씰 소형', '분류': '씰', '단위': 'EA', '설명': '소형 방수씰' },
-        { '자재코드*': 'C-001', '자재명*': '커넥터 하우징 6P', '분류': '커넥터', '단위': 'EA', '설명': '6핀 커넥터 하우징' },
-        { '자재코드*': 'T-003', '자재명*': '튜브 6mm', '분류': '튜브', '단위': 'M', '설명': '열수축 튜브 6mm' },
+        {
+          '프로젝트코드': '주자재', '경림품번': '250-351201', '품명': 'PB625-03027',
+          '출하 고객품번': '', '원자재 공급사 품번': '', 'PDA 확인 품번': '',
+          '원자재-공급처': '한국단자공업', '규격1': '625시리즈', '규격2': '', '규격3': '',
+          '전선재질': '', '전선 굵기': '', '색상': '',
+          '품목유형': '원재료', '단위': 'EA', '단위중량': '', '중량단위': ''
+        },
+        {
+          '프로젝트코드': '주자재', '경림품번': '210-4917', '품명': 'AVS0.5-BK',
+          '출하 고객품번': '', '원자재 공급사 품번': 'C1A1BKR', 'PDA 확인 품번': '',
+          '원자재-공급처': '경신전선', '규격1': 'AVS', '규격2': '0.5sq', '규격3': '',
+          '전선재질': 'AVS', '전선 굵기': '0.5', '색상': 'BK',
+          '품목유형': '원재료', '단위': 'M', '단위중량': 0.0075, '중량단위': 'KG'
+        },
+        {
+          '프로젝트코드': '주자재', '경림품번': '250-8668', '품명': '682028',
+          '출하 고객품번': '', '원자재 공급사 품번': '', 'PDA 확인 품번': '682028',
+          '원자재-공급처': '우주일렉트로닉스', '규격1': '', '규격2': '', '규격3': '',
+          '전선재질': '', '전선 굵기': '', '색상': '',
+          '품목유형': '원재료', '단위': 'EA', '단위중량': '', '중량단위': ''
+        },
       ],
       guide: [
-        '[ 자재 마스터 등록 안내 ]',
+        '[ 품목마스터 등록 안내 ]',
         '',
-        '1. \'자재 마스터\' 시트에 데이터를 입력하세요.',
-        '2. *표시된 항목은 필수 입력입니다.',
-        '3. 자재코드는 중복될 수 없습니다.',
-        '4. 샘플 데이터는 삭제 후 사용하세요.',
+        '1. \'품목마스터\' 시트에 데이터를 입력하세요.',
+        '2. 경림품번과 품명은 필수 입력입니다.',
+        '3. 경림품번은 중복될 수 없습니다.',
+        '4. 샘플 데이터(2~4행)는 삭제 후 사용하세요.',
         '',
-        '[ 분류 목록 ]',
-        '- 단자: 터미널, 단자류',
-        '- 전선: 와이어, 케이블',
-        '- 씰: 방수씰, 그로멧',
-        '- 커넥터: 하우징, 커넥터',
-        '- 튜브: 열수축튜브, 보호튜브',
-        '- 테이프: 절연테이프, 마킹테이프',
-        '- 기타: 클립, 밴드 등',
+        '[ 바코드 매칭 필드 - 중요! ]',
+        '바코드 스캔 시 아래 필드로 자재를 자동 매칭합니다:',
+        '- PDA 확인 품번: PDA 바코드 매칭용 (최우선)',
+        '- 원자재 공급사 품번: 공급사 바코드 매칭용',
+        '- 품명: 생산처 바코드 매칭용 (품명=바코드코드)',
+        '- 경림품번: MES 내부 품번 매칭',
         '',
-        '[ 단위 목록 ]',
-        '- EA: 개',
-        '- M: 미터',
-        '- SET: 세트',
-        '- ROLL: 롤',
-        '- BOX: 박스',
+        '[ 컬럼 설명 ]',
+        '- 프로젝트코드: 주자재/부자재 구분',
+        '- 경림품번: MES 시스템 내부 품번 (예: 250-351201)',
+        '- 품명: 제품명 또는 생산처 품번 (바코드 매칭용)',
+        '- 출하 고객품번: 고객사 품번',
+        '- 원자재 공급사 품번: 공급사 자체 품번 (바코드 매칭용)',
+        '- PDA 확인 품번: PDA 스캔용 품번 (바코드 매칭용)',
+        '- 원자재-공급처: 공급사명 (예: 한국단자공업)',
+        '- 규격1~3: 제품 규격 정보',
+        '- 전선재질: 전선 재질 (AVS, AVSS 등)',
+        '- 전선 굵기: 전선 굵기 (0.5, 0.85 등)',
+        '- 색상: 제품 색상 (BK, RD, WH 등)',
+        '- 품목유형: 원재료/반제품',
+        '- 단위: EA, M, SET 등',
+        '- 단위중량: 단위당 중량',
+        '- 중량단위: KG, G 등',
+        '',
+        '[ 품목유형 ]',
+        '- 원재료: 원자재',
+        '- 반제품: 중간 조립품',
       ],
     },
     bom: {
@@ -854,7 +947,7 @@ export function downloadImportTemplate(
   // 파일 다운로드 (한글 파일명)
   const fileNames: Record<string, string> = {
     product: '완제품관리.xlsx',
-    material: '자재관리.xlsx',
+    material: '품목마스터.xlsx',
     bom: 'BOM관리.xlsx',
     receiving: '자재입고.xlsx',
     stock: '재고등록.xlsx',
