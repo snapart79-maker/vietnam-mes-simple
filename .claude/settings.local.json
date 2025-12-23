@@ -24,7 +24,8 @@
       "Bash(node analyze-barcode.js:*)",
       "Bash(node:*)",
       "Bash(ls:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(grep:*)"
     ]
   }
 }

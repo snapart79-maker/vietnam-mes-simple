@@ -768,3 +768,181 @@ export function formatCIBarcodeInfo(barcode: string): string {
 
   return `[회로검사] ${parsed.productCode} - ${parsed.quantity}개 | Marking: ${parsed.markingLot} #${parsed.sequence}`
 }
+
+// ============================================
+// BARCORD Compatible CI/VI Barcode
+// ============================================
+
+/**
+ * BARCORD 호환 CI 바코드 타입
+ * 형식: CI-{markingLot}-{4자리시퀀스}
+ * 예시: CI-5MT-0001
+ */
+export interface BarcordCIBarcode {
+  type: 'CI'
+  markingLot: string   // 3자리 영숫자 (예: 5MT)
+  sequence: string     // 4자리 시퀀스 (예: 0001)
+}
+
+/**
+ * BARCORD 호환 VI 바코드 타입
+ * 형식: VI-{markingLot}-{4자리시퀀스}
+ * 예시: VI-5MT-0001
+ */
+export interface BarcordVIBarcode {
+  type: 'VI'
+  markingLot: string   // 3자리 영숫자 (예: 5MT)
+  sequence: string     // 4자리 시퀀스 (예: 0001)
+}
+
+/**
+ * BARCORD 형식 CI 바코드 정규식 패턴
+ * 형식: CI-{markingLot 3자리}-{4자리시퀀스}
+ */
+export const BARCORD_CI_PATTERN = /^CI-([A-Z0-9]{3})-(\d{4})$/i
+
+/**
+ * BARCORD 형식 VI 바코드 정규식 패턴
+ * 형식: VI-{markingLot 3자리}-{4자리시퀀스}
+ */
+export const BARCORD_VI_PATTERN = /^VI-([A-Z0-9]{3})-(\d{4})$/i
+
+/**
+ * BARCORD 호환 CI 바코드 생성
+ * 형식: CI-{markingLot}-{4자리시퀀스}
+ * 예시: CI-5MT-0001
+ *
+ * @param markingLot 마킹LOT (3자리 영숫자)
+ * @param sequence 시퀀스 번호 (1-9999)
+ */
+export function generateBarcordCIBarcode(
+  markingLot: string,
+  sequence: number
+): string {
+  if (!markingLot || markingLot.length !== 3 || !/^[A-Z0-9]{3}$/i.test(markingLot)) {
+    throw new Error('마킹LOT은 3자리 영숫자여야 합니다.')
+  }
+
+  if (sequence < 1 || sequence > 9999 || !Number.isInteger(sequence)) {
+    throw new Error('시퀀스는 1-9999 사이의 정수여야 합니다.')
+  }
+
+  const seqStr = String(sequence).padStart(4, '0')
+  return `CI-${markingLot.toUpperCase()}-${seqStr}`
+}
+
+/**
+ * BARCORD 호환 VI 바코드 생성
+ * 형식: VI-{markingLot}-{4자리시퀀스}
+ * 예시: VI-5MT-0001
+ *
+ * @param markingLot 마킹LOT (3자리 영숫자)
+ * @param sequence 시퀀스 번호 (1-9999)
+ */
+export function generateBarcordVIBarcode(
+  markingLot: string,
+  sequence: number
+): string {
+  if (!markingLot || markingLot.length !== 3 || !/^[A-Z0-9]{3}$/i.test(markingLot)) {
+    throw new Error('마킹LOT은 3자리 영숫자여야 합니다.')
+  }
+
+  if (sequence < 1 || sequence > 9999 || !Number.isInteger(sequence)) {
+    throw new Error('시퀀스는 1-9999 사이의 정수여야 합니다.')
+  }
+
+  const seqStr = String(sequence).padStart(4, '0')
+  return `VI-${markingLot.toUpperCase()}-${seqStr}`
+}
+
+/**
+ * BARCORD 형식 CI 바코드 파싱
+ */
+export function parseBarcordCIBarcode(barcode: string): BarcordCIBarcode | null {
+  if (!barcode || typeof barcode !== 'string') {
+    return null
+  }
+
+  const trimmed = barcode.trim().toUpperCase()
+  const match = BARCORD_CI_PATTERN.exec(trimmed)
+
+  if (!match) {
+    return null
+  }
+
+  const [, markingLot, sequence] = match
+
+  return {
+    type: 'CI',
+    markingLot,
+    sequence,
+  }
+}
+
+/**
+ * BARCORD 형식 VI 바코드 파싱
+ */
+export function parseBarcordVIBarcode(barcode: string): BarcordVIBarcode | null {
+  if (!barcode || typeof barcode !== 'string') {
+    return null
+  }
+
+  const trimmed = barcode.trim().toUpperCase()
+  const match = BARCORD_VI_PATTERN.exec(trimmed)
+
+  if (!match) {
+    return null
+  }
+
+  const [, markingLot, sequence] = match
+
+  return {
+    type: 'VI',
+    markingLot,
+    sequence,
+  }
+}
+
+/**
+ * BARCORD 형식 CI 바코드 여부 확인
+ */
+export function isBarcordCIBarcode(barcode: string): boolean {
+  if (!barcode || typeof barcode !== 'string') {
+    return false
+  }
+  return BARCORD_CI_PATTERN.test(barcode.trim().toUpperCase())
+}
+
+/**
+ * BARCORD 형식 VI 바코드 여부 확인
+ */
+export function isBarcordVIBarcode(barcode: string): boolean {
+  if (!barcode || typeof barcode !== 'string') {
+    return false
+  }
+  return BARCORD_VI_PATTERN.test(barcode.trim().toUpperCase())
+}
+
+/**
+ * BARCORD 형식 CI/VI 바코드 여부 확인 (둘 중 하나)
+ */
+export function isBarcordInspectionBarcode(barcode: string): boolean {
+  return isBarcordCIBarcode(barcode) || isBarcordVIBarcode(barcode)
+}
+
+/**
+ * BARCORD 형식 CI/VI 바코드 정보 포맷
+ */
+export function formatBarcordInspectionInfo(barcode: string): string {
+  const ciParsed = parseBarcordCIBarcode(barcode)
+  if (ciParsed) {
+    return `[회로검사] 마킹LOT: ${ciParsed.markingLot} #${ciParsed.sequence}`
+  }
+
+  const viParsed = parseBarcordVIBarcode(barcode)
+  if (viParsed) {
+    return `[육안검사] 마킹LOT: ${viParsed.markingLot} #${viParsed.sequence}`
+  }
+
+  return `잘못된 검사 바코드: ${barcode}`
+}

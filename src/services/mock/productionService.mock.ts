@@ -2,6 +2,7 @@
  * Production Service (Mock)
  *
  * 브라우저 개발용 Mock 데이터
+ * Phase 1: localStorage 영속화 지원
  */
 
 import {
@@ -16,6 +17,123 @@ import {
   type InputType,
 } from '../../lib/processValidation'
 import { parseBarcode } from '../barcodeService'
+
+// ============================================
+// LocalStorage Keys & Persistence
+// ============================================
+
+const STORAGE_KEYS = {
+  LOTS: 'vietnam_mes_production_lots',
+  CARRY_OVERS: 'vietnam_mes_carry_overs',
+}
+
+// Date 필드를 가진 객체의 직렬화/역직렬화를 위한 타입
+interface SerializedLot {
+  id: number
+  lotNumber: string
+  processCode: string
+  lineCode: string | null
+  status: LotStatus
+  product: {
+    id: number
+    code: string
+    name: string
+  } | null
+  worker: {
+    id: number
+    name: string
+  } | null
+  plannedQty: number
+  completedQty: number
+  defectQty: number
+  carryOverIn: number
+  carryOverOut: number
+  startedAt: string  // ISO string
+  completedAt: string | null  // ISO string
+  lotMaterials: Array<{
+    id: number
+    materialLotNo: string
+    quantity: number
+    material: {
+      id: number
+      code: string
+      name: string
+    }
+  }>
+}
+
+interface SerializedCarryOver {
+  id: number
+  processCode: string
+  productId: number
+  lineCode: string
+  sourceDate: string  // ISO string
+  sourceLotNo: string
+  quantity: number
+  usedQty: number
+  targetLotNo: string | null
+  isUsed: boolean
+}
+
+// 데이터 로드 (with Date 변환)
+function loadLotsFromStorage(): LotWithRelations[] {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEYS.LOTS)
+    if (stored) {
+      const parsed: SerializedLot[] = JSON.parse(stored)
+      return parsed.map((lot) => ({
+        ...lot,
+        startedAt: new Date(lot.startedAt),
+        completedAt: lot.completedAt ? new Date(lot.completedAt) : null,
+      }))
+    }
+  } catch (error) {
+    console.error('Failed to load production lots from localStorage:', error)
+  }
+  return []
+}
+
+function loadCarryOversFromStorage(): MockCarryOver[] {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEYS.CARRY_OVERS)
+    if (stored) {
+      const parsed: SerializedCarryOver[] = JSON.parse(stored)
+      return parsed.map((co) => ({
+        ...co,
+        sourceDate: new Date(co.sourceDate),
+      }))
+    }
+  } catch (error) {
+    console.error('Failed to load carry overs from localStorage:', error)
+  }
+  return []
+}
+
+// 데이터 저장
+function saveLots(): void {
+  try {
+    const serialized: SerializedLot[] = MOCK_LOTS.map((lot) => ({
+      ...lot,
+      startedAt: lot.startedAt.toISOString(),
+      completedAt: lot.completedAt ? lot.completedAt.toISOString() : null,
+    }))
+    localStorage.setItem(STORAGE_KEYS.LOTS, JSON.stringify(serialized))
+  } catch (error) {
+    console.error('Failed to save production lots to localStorage:', error)
+  }
+}
+
+function saveCarryOvers(): void {
+  try {
+    const serialized: SerializedCarryOver[] = MOCK_CARRY_OVERS.map((co) => ({
+      ...co,
+      sourceDate: co.sourceDate.toISOString(),
+    }))
+    localStorage.setItem(STORAGE_KEYS.CARRY_OVERS, JSON.stringify(serialized))
+  } catch (error) {
+    console.error('Failed to save carry overs to localStorage:', error)
+  }
+}
 
 export type LotStatus = 'IN_PROGRESS' | 'COMPLETED' | 'CONSUMED' | 'CANCELLED'
 
@@ -80,8 +198,8 @@ export interface CompleteProductionInput {
   carryOverQty?: number
 }
 
-// Mock LOT 데이터 (초기 데이터 없음 - 공장초기화 상태)
-const MOCK_LOTS: LotWithRelations[] = []
+// Mock LOT 데이터 (localStorage에서 로드)
+let MOCK_LOTS: LotWithRelations[] = loadLotsFromStorage()
 
 /**
  * LOT 번호로 조회
@@ -217,6 +335,7 @@ export async function createLot(input: {
   }
 
   MOCK_LOTS.push(newLot)
+  saveLots()
   return newLot
 }
 
@@ -238,6 +357,7 @@ export async function completeProduction(input: {
   lot.defectQty = input.defectQty || 0
   lot.completedAt = new Date()
 
+  saveLots()
   return lot
 }
 
@@ -257,6 +377,7 @@ export async function updateLotQuantity(
   if (updates.completedQty !== undefined) lot.completedQty = updates.completedQty
   if (updates.defectQty !== undefined) lot.defectQty = updates.defectQty
 
+  saveLots()
   return lot
 }
 
@@ -280,6 +401,7 @@ export async function startProduction(
     lot.worker = { id: workerId, name: `작업자${workerId}` }
   }
 
+  saveLots()
   return lot
 }
 
@@ -308,6 +430,7 @@ export async function addMaterial(input: {
     material: { id: input.materialId, code: 'MAT-XXX', name: '자재' },
   })
 
+  saveLots()
   return { lotMaterialId: newMaterialId, lot }
 }
 
@@ -321,6 +444,7 @@ export async function removeMaterial(lotMaterialId: number): Promise<void> {
     const index = lot.lotMaterials.findIndex((m) => m.id === lotMaterialId)
     if (index !== -1) {
       lot.lotMaterials.splice(index, 1)
+      saveLots()
       return
     }
   }
@@ -355,6 +479,9 @@ export function resetProductionData(): number {
   const count = MOCK_LOTS.length
   MOCK_LOTS.length = 0
   MOCK_CARRY_OVERS.length = 0
+  // localStorage도 초기화
+  localStorage.removeItem(STORAGE_KEYS.LOTS)
+  localStorage.removeItem(STORAGE_KEYS.CARRY_OVERS)
   return count
 }
 
@@ -375,7 +502,7 @@ interface MockCarryOver {
   isUsed: boolean
 }
 
-const MOCK_CARRY_OVERS: MockCarryOver[] = []
+let MOCK_CARRY_OVERS: MockCarryOver[] = loadCarryOversFromStorage()
 
 // ============================================
 // 2단계 생산 워크플로우 (Mock)
@@ -431,6 +558,10 @@ export async function startNewProduction(input: StartProductionInput): Promise<L
   }
 
   MOCK_LOTS.push(newLot)
+  saveLots()
+  if (input.carryOverId) {
+    saveCarryOvers()
+  }
   return newLot
 }
 
@@ -473,6 +604,10 @@ export async function completeProductionV2(input: CompleteProductionInput): Prom
   lot.carryOverOut = input.carryOverQty || 0
   lot.completedAt = new Date()
 
+  saveLots()
+  if (input.createCarryOver && input.carryOverQty && input.carryOverQty > 0) {
+    saveCarryOvers()
+  }
   return lot
 }
 
@@ -509,6 +644,11 @@ export async function deleteInProgressProduction(
     MOCK_LOTS.splice(lotIndex, 1)
   } else {
     lot.status = 'CANCELLED'
+  }
+
+  saveLots()
+  if (lot.carryOverIn > 0) {
+    saveCarryOvers()
   }
 }
 
@@ -692,6 +832,7 @@ export async function addMaterialWithValidation(
     material: { id: materialId, code: `MAT-${materialId}`, name: '자재' },
   })
 
+  saveLots()
   return {
     lotMaterialId: newMaterialId,
     lot,
@@ -755,6 +896,7 @@ export async function addMaterialsBatch(
     })
   }
 
+  saveLots()
   return {
     results,
     lot,

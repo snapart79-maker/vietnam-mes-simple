@@ -1,109 +1,143 @@
-import { app as a, BrowserWindow as u, ipcMain as n, dialog as o } from "electron";
-import i from "node:path";
-import { fileURLToPath as p } from "node:url";
-import { writeFileSync as d, readFileSync as h } from "node:fs";
-const c = i.dirname(p(import.meta.url));
-process.env.DIST = i.join(c, "../dist");
-process.env.VITE_PUBLIC = a.isPackaged ? process.env.DIST : i.join(c, "../public");
-let r;
-const l = process.env.VITE_DEV_SERVER_URL, w = !a.isPackaged;
-function f() {
-  r = new u({
+import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { writeFileSync, readFileSync } from "node:fs";
+const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
+process.env.DIST = path.join(__dirname$1, "../dist");
+process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(__dirname$1, "../public");
+let win;
+const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
+const isDev = !app.isPackaged;
+function createWindow() {
+  win = new BrowserWindow({
     width: 1200,
     height: 800,
     webPreferences: {
-      preload: i.join(c, "preload.js")
+      preload: path.join(__dirname$1, "preload.js")
     }
-  }), r.webContents.on("did-finish-load", () => {
-    r?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
-  }), l ? r.loadURL(l) : w ? r.loadURL("http://localhost:5173") : r.loadFile(i.join(process.env.DIST, "index.html"));
+  });
+  win.webContents.on("did-finish-load", () => {
+    win?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
+  });
+  if (VITE_DEV_SERVER_URL) {
+    win.loadURL(VITE_DEV_SERVER_URL);
+  } else if (isDev) {
+    win.loadURL("http://localhost:5173");
+  } else {
+    win.loadFile(path.join(process.env.DIST, "index.html"));
+  }
 }
-a.on("window-all-closed", () => {
-  process.platform !== "darwin" && a.quit();
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
 });
-a.on("activate", () => {
-  u.getAllWindows().length === 0 && f();
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
 });
-a.whenReady().then(f);
-n.handle("get-printers", async () => {
-  if (!r) return [];
+app.whenReady().then(createWindow);
+ipcMain.handle("get-printers", async () => {
+  if (!win) return [];
   try {
-    return (await r.webContents.getPrintersAsync()).map((e) => ({
-      name: e.name,
-      displayName: e.displayName,
-      description: e.description,
-      status: e.status,
-      isDefault: e.isDefault
+    const printers = await win.webContents.getPrintersAsync();
+    return printers.map((printer) => ({
+      name: printer.name,
+      displayName: printer.displayName,
+      description: printer.description,
+      status: printer.status,
+      isDefault: printer.isDefault
     }));
-  } catch (s) {
-    return console.error("프린터 목록 조회 오류:", s), [];
+  } catch (error) {
+    console.error("프린터 목록 조회 오류:", error);
+    return [];
   }
 });
-n.handle("print-pdf", async (s, e) => {
-  if (!r) return { success: !1, error: "Window not found" };
+ipcMain.handle("print-pdf", async (_event, options) => {
+  if (!win) return { success: false, error: "Window not found" };
   try {
-    const t = {
-      silent: e.silent ?? !0,
-      deviceName: e.printerName,
-      copies: e.copies ?? 1
+    const printOptions = {
+      silent: options.silent ?? true,
+      deviceName: options.printerName,
+      copies: options.copies ?? 1
     };
-    return { success: await r.webContents.print(t) };
-  } catch (t) {
-    return console.error("PDF 인쇄 오류:", t), { success: !1, error: String(t) };
+    const success = await win.webContents.print(printOptions);
+    return { success };
+  } catch (error) {
+    console.error("PDF 인쇄 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-n.handle("print-to-pdf", async () => {
-  if (!r) return { success: !1, error: "Window not found" };
+ipcMain.handle("print-to-pdf", async () => {
+  if (!win) return { success: false, error: "Window not found" };
   try {
-    const { filePath: s } = await o.showSaveDialog(r, {
+    const { filePath } = await dialog.showSaveDialog(win, {
       defaultPath: "output.pdf",
       filters: [{ name: "PDF", extensions: ["pdf"] }]
     });
-    if (!s)
-      return { success: !1, error: "Cancelled" };
-    const e = await r.webContents.printToPDF({});
-    return d(s, e), { success: !0, filePath: s };
-  } catch (s) {
-    return console.error("PDF 저장 오류:", s), { success: !1, error: String(s) };
+    if (!filePath) {
+      return { success: false, error: "Cancelled" };
+    }
+    const data = await win.webContents.printToPDF({});
+    writeFileSync(filePath, data);
+    return { success: true, filePath };
+  } catch (error) {
+    console.error("PDF 저장 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-n.handle("print-label", async (s, e) => {
-  if (!r) return { success: !1, error: "Window not found" };
+ipcMain.handle("print-label", async (_event, options) => {
+  if (!win) return { success: false, error: "Window not found" };
   try {
-    if (e.zplData)
-      return console.log("ZPL 라벨 인쇄 요청:", e.printerName), { success: !0, message: "ZPL 인쇄 대기중 (구현 예정)" };
-    if (e.pdfBase64) {
-      const t = {
-        silent: !0,
-        deviceName: e.printerName,
+    if (options.zplData) {
+      console.log("ZPL 라벨 인쇄 요청:", options.printerName);
+      return { success: true, message: "ZPL 인쇄 대기중 (구현 예정)" };
+    }
+    if (options.pdfBase64) {
+      const printOptions = {
+        silent: true,
+        deviceName: options.printerName,
         copies: 1
       };
-      return await r.webContents.print(t), { success: !0 };
+      await win.webContents.print(printOptions);
+      return { success: true };
     }
-    return { success: !1, error: "No print data provided" };
-  } catch (t) {
-    return console.error("라벨 인쇄 오류:", t), { success: !1, error: String(t) };
+    return { success: false, error: "No print data provided" };
+  } catch (error) {
+    console.error("라벨 인쇄 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-n.handle("save-file-dialog", async (s, e) => r && (await o.showSaveDialog(r, {
-  defaultPath: e.defaultPath,
-  filters: e.filters
-})).filePath || null);
-n.handle("open-file-dialog", async (s, e) => r ? (await o.showOpenDialog(r, {
-  filters: e.filters,
-  properties: e.multiple ? ["openFile", "multiSelections"] : ["openFile"]
-})).filePaths : []);
-n.handle("write-file", async (s, e) => {
+ipcMain.handle("save-file-dialog", async (_event, options) => {
+  if (!win) return null;
+  const result = await dialog.showSaveDialog(win, {
+    defaultPath: options.defaultPath,
+    filters: options.filters
+  });
+  return result.filePath || null;
+});
+ipcMain.handle("open-file-dialog", async (_event, options) => {
+  if (!win) return [];
+  const result = await dialog.showOpenDialog(win, {
+    filters: options.filters,
+    properties: options.multiple ? ["openFile", "multiSelections"] : ["openFile"]
+  });
+  return result.filePaths;
+});
+ipcMain.handle("write-file", async (_event, options) => {
   try {
-    return d(e.filePath, e.data), { success: !0 };
-  } catch (t) {
-    return { success: !1, error: String(t) };
+    writeFileSync(options.filePath, options.data);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: String(error) };
   }
 });
-n.handle("read-file", async (s, e) => {
+ipcMain.handle("read-file", async (_event, filePath) => {
   try {
-    return { success: !0, data: h(e).toString("base64") };
-  } catch (t) {
-    return { success: !1, error: String(t) };
+    const data = readFileSync(filePath);
+    return { success: true, data: data.toString("base64") };
+  } catch (error) {
+    return { success: false, error: String(error) };
   }
 });
