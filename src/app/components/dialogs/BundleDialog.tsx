@@ -48,17 +48,35 @@ import {
   Search,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import {
-  createBundle,
-  addToBundle,
-  removeFromBundle,
-  completeBundle,
-  getAvailableLotsForBundle,
-  type BundleLotWithItems,
-} from '@/services/bundleService'
-import { getAllProducts } from '@/services/productService'
+import { hasBusinessAPI, getAPI } from '@/lib/electronBridge'
 import { createBundleLabel, previewLabel, printLabel, downloadLabel } from '@/services/labelService'
 import { format } from 'date-fns'
+
+// ============================================
+// Types (bundleService에서 가져온 타입 정의)
+// ============================================
+interface BundleItemInfo {
+  id: number
+  productionLotId: number
+  lotNumber: string
+  quantity: number
+  processCode: string
+  createdAt: Date
+}
+
+interface BundleLotWithItems {
+  id: number
+  bundleNo: string
+  productId: number
+  productCode: string
+  productName: string
+  bundleType: 'SAME_PRODUCT' | 'MULTI_PRODUCT'
+  setQuantity: number
+  totalQty: number
+  status: 'CREATED' | 'SHIPPED' | 'UNBUNDLED'
+  items: BundleItemInfo[]
+  createdAt: Date
+}
 
 interface BundleDialogProps {
   open: boolean
@@ -152,7 +170,17 @@ export function BundleDialog({
   // 제품 목록 로드 및 절압착품번 추출
   const loadProducts = useCallback(async () => {
     try {
-      const data = await getAllProducts()
+      if (!hasBusinessAPI()) {
+        console.warn('[BundleDialog] electronAPI not available')
+        return
+      }
+      const api = getAPI()
+      const result = await api!.product.getAll()
+      if (!result.success || !result.data) {
+        console.error('Failed to load products:', result.error)
+        return
+      }
+      const data = result.data as Array<{ id: number; code: string; name: string; processCode?: string }>
       const caProducts = data.filter((p) => p.processCode === 'CA')
 
       setProducts(
@@ -231,7 +259,23 @@ export function BundleDialog({
   // 선택 가능한 LOT 로드
   const loadAvailableLots = useCallback(async (productId: number) => {
     try {
-      const lots = await getAvailableLotsForBundle(productId)
+      if (!hasBusinessAPI()) {
+        console.warn('[BundleDialog] electronAPI not available')
+        return
+      }
+      const api = getAPI()
+      const result = await api!.bundle.getAvailableLots(productId)
+      if (!result.success || !result.data) {
+        console.error('Failed to load available lots:', result.error)
+        return
+      }
+      const lots = result.data as Array<{
+        id: number
+        lotNumber: string
+        processCode: string
+        completedQty: number
+        completedAt: Date | null
+      }>
       setAvailableLots(
         lots.map((lot) => ({
           ...lot,
@@ -287,19 +331,31 @@ export function BundleDialog({
       return
     }
 
+    if (!hasBusinessAPI()) {
+      console.warn('[BundleDialog] 브라우저 모드: 번들 생성 기능 제한')
+      toast.info('이 기능은 데스크톱 앱에서 사용 가능합니다.')
+      return
+    }
+
     setIsLoading(true)
     try {
       // 선택된 절압착품번으로 제품 찾기
       const product = products.find((p) => p.code === selectedCrimpCode)
       if (!product) throw new Error('절압착품번 정보를 찾을 수 없습니다.')
 
-      const bundle = await createBundle({
+      const api = getAPI()
+      const result = await api!.bundle.create({
         processCode: 'CA',
         productId: product.id,
         productCode: selectedCrimpCode,
         setQuantity,
       })
 
+      if (!result.success || !result.data) {
+        throw new Error(result.error || '번들 생성 실패')
+      }
+
+      const bundle = result.data as BundleLotWithItems
       setCurrentBundle(bundle)
       await loadAvailableLots(product.id)
       setStep('select')
@@ -342,16 +398,26 @@ export function BundleDialog({
       return
     }
 
+    if (!hasBusinessAPI()) {
+      console.warn('[BundleDialog] 브라우저 모드: LOT 추가 기능 제한')
+      toast.info('이 기능은 데스크톱 앱에서 사용 가능합니다.')
+      return
+    }
+
     setIsLoading(true)
     try {
+      const api = getAPI()
       let updatedBundle = currentBundle
 
       for (const lot of selectedLots) {
-        updatedBundle = await addToBundle({
+        const result = await api!.bundle.addToBundle({
           bundleLotId: currentBundle.id,
           productionLotId: lot.id,
           quantity: lot.completedQty,
         })
+        if (result.success && result.data) {
+          updatedBundle = result.data as BundleLotWithItems
+        }
       }
 
       setCurrentBundle(updatedBundle)
@@ -394,14 +460,26 @@ export function BundleDialog({
       return
     }
 
+    if (!hasBusinessAPI()) {
+      console.warn('[BundleDialog] 브라우저 모드: 스캔 추가 기능 제한')
+      toast.info('이 기능은 데스크톱 앱에서 사용 가능합니다.')
+      return
+    }
+
     setIsLoading(true)
     try {
-      const updatedBundle = await addToBundle({
+      const api = getAPI()
+      const result = await api!.bundle.addToBundle({
         bundleLotId: currentBundle.id,
         productionLotId: lot.id,
         quantity: lot.completedQty,
       })
 
+      if (!result.success || !result.data) {
+        throw new Error(result.error || 'LOT 추가 실패')
+      }
+
+      const updatedBundle = result.data as BundleLotWithItems
       setCurrentBundle(updatedBundle)
       setAvailableLots((prev) => prev.filter((l) => l.id !== lot.id))
       setScanInput('')
@@ -418,9 +496,22 @@ export function BundleDialog({
   const handleRemoveFromBundle = async (itemId: number) => {
     if (!currentBundle) return
 
+    if (!hasBusinessAPI()) {
+      console.warn('[BundleDialog] 브라우저 모드: LOT 제거 기능 제한')
+      toast.info('이 기능은 데스크톱 앱에서 사용 가능합니다.')
+      return
+    }
+
     setIsLoading(true)
     try {
-      const updatedBundle = await removeFromBundle(itemId)
+      const api = getAPI()
+      const result = await api!.bundle.removeFromBundle(itemId)
+
+      if (!result.success || !result.data) {
+        throw new Error(result.error || 'LOT 제거 실패')
+      }
+
+      const updatedBundle = result.data as BundleLotWithItems
       setCurrentBundle(updatedBundle)
       await loadAvailableLots(currentBundle.productId)
       toast.success('LOT 제거 완료')
@@ -462,9 +553,22 @@ export function BundleDialog({
   const handleCompleteBundle = async () => {
     if (!currentBundle) return
 
+    if (!hasBusinessAPI()) {
+      console.warn('[BundleDialog] 브라우저 모드: 번들 완료 기능 제한')
+      toast.info('이 기능은 데스크톱 앱에서 사용 가능합니다.')
+      return
+    }
+
     setIsLoading(true)
     try {
-      const completedBundle = await completeBundle(currentBundle.id)
+      const api = getAPI()
+      const result = await api!.bundle.complete(currentBundle.id)
+
+      if (!result.success || !result.data) {
+        throw new Error(result.error || '번들 완료 실패')
+      }
+
+      const completedBundle = result.data as BundleLotWithItems
       toast.success('번들 완료')
       onComplete?.(completedBundle)
       onOpenChange(false)

@@ -24,6 +24,8 @@ import QRCode from 'qrcode'
 import JsBarcode from 'jsbarcode'
 import { registerKoreanFont } from '@/lib/koreanFont'
 import { translate, getStoredLocale } from '@/lib/i18n'
+import { hasBusinessAPI, getAPI } from '@/lib/electronBridge'
+import { getProcessName } from '@/services/barcodeService'
 
 // ============================================
 // i18n Helper
@@ -74,6 +76,7 @@ interface DocumentPreviewDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   data: DocumentData | null
+  lotId?: number  // lotId 제공 시 DB에서 최신 데이터 조회
   onPrint?: () => void
 }
 
@@ -102,6 +105,7 @@ export function DocumentPreviewDialog({
   open,
   onOpenChange,
   data,
+  lotId,
   onPrint,
 }: DocumentPreviewDialogProps) {
   const [isGenerating, setIsGenerating] = useState(false)
@@ -109,11 +113,86 @@ export function DocumentPreviewDialog({
   const [showQR, setShowQR] = useState(true)
   const [showBarcode, setShowBarcode] = useState(true)
   const [showMaterials, setShowMaterials] = useState(true)
+  const [dbData, setDbData] = useState<DocumentData | null>(null)
+  const [isLoadingDb, setIsLoadingDb] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
+
+  // lotId가 있으면 DB에서 최신 데이터 조회
+  useEffect(() => {
+    if (open && lotId && hasBusinessAPI()) {
+      setIsLoadingDb(true)
+      const api = getAPI()
+      api!.production.getLotById(lotId)
+        .then((result: { success: boolean; data?: unknown; error?: string }) => {
+          if (result.success && result.data) {
+            const lot = result.data as {
+              id: number
+              lotNumber: string
+              processCode: string
+              status: string
+              plannedQty: number
+              completedQty: number
+              defectQty: number
+              lineCode?: string
+              startedAt: string
+              product?: { code: string; name: string }
+              worker?: { name: string }
+              crimpCode?: string
+              lotMaterials?: Array<{
+                materialLotNo: string
+                materialCode?: string
+                materialName?: string
+                quantity: number
+                material?: { code: string; name: string }
+              }>
+            }
+            // DB 데이터를 DocumentData 형식으로 변환
+            const docData: DocumentData = {
+              lotNumber: lot.lotNumber,
+              productCode: lot.product?.code || '-',
+              productName: lot.product?.name || '-',
+              quantity: lot.completedQty || lot.plannedQty,
+              unit: 'EA',
+              productionDate: new Date(lot.startedAt),
+              processCode: lot.processCode,
+              processName: getProcessName(lot.processCode),
+              inputMaterials: (lot.lotMaterials || []).map(lm => ({
+                lotNumber: lm.materialLotNo,
+                productCode: lm.materialCode || lm.material?.code || '-',
+                name: lm.materialName || lm.material?.name || '-',
+                quantity: lm.quantity,
+                unit: 'EA',
+                sourceType: 'material' as const,
+                processCode: lot.processCode,
+              })),
+              crimpProductCode: lot.crimpCode,
+              lineCode: lot.lineCode,
+              plannedQuantity: lot.plannedQty,
+              completedQuantity: lot.completedQty,
+              defectQuantity: lot.defectQty,
+              workerName: lot.worker?.name,
+            }
+            setDbData(docData)
+          }
+        })
+        .catch((error: unknown) => {
+          console.error('LOT 조회 실패:', error)
+          toast.error('LOT 데이터 조회에 실패했습니다.')
+        })
+        .finally(() => {
+          setIsLoadingDb(false)
+        })
+    } else {
+      setDbData(null)
+    }
+  }, [open, lotId])
+
+  // 실제 사용할 데이터 (DB 데이터 우선, 없으면 props 데이터)
+  const documentData = dbData || data
 
   // PDF 생성
   useEffect(() => {
-    if (open && data) {
+    if (open && documentData && !isLoadingDb) {
       generatePDF()
     }
     return () => {
@@ -121,10 +200,10 @@ export function DocumentPreviewDialog({
         URL.revokeObjectURL(pdfUrl)
       }
     }
-  }, [open, data, showQR, showBarcode, showMaterials])
+  }, [open, documentData, showQR, showBarcode, showMaterials, isLoadingDb])
 
   const generatePDF = async () => {
-    if (!data) return
+    if (!documentData) return
 
     setIsGenerating(true)
 
@@ -165,7 +244,7 @@ export function DocumentPreviewDialog({
       const labelWidth = 22
       const valueWidth = 68
       const tableRowHeight = 8
-      const dateStr = formatDateWithTime(data.productionDate)
+      const dateStr = formatDateWithTime(documentData.productionDate)
 
       // 테이블 그리기 함수
       const drawInfoRow = (
@@ -199,21 +278,21 @@ export function DocumentPreviewDialog({
       }
 
       // 기본 정보 행 (i18n 적용)
-      const processName = tr(`process.${data.processCode}`) || data.processName
-      drawInfoRow(tr('document.voucher_number'), data.lotNumber, tr('document.process'), `${data.processCode} - ${processName}`, y)
+      const processName = tr(`process.${documentData.processCode}`) || documentData.processName
+      drawInfoRow(tr('document.voucher_number'), documentData.lotNumber, tr('document.process'), `${documentData.processCode} - ${processName}`, y)
       y += tableRowHeight
-      drawInfoRow(tr('document.issue_date'), dateStr, tr('document.line'), data.lineCode || '-', y)
+      drawInfoRow(tr('document.issue_date'), dateStr, tr('document.line'), documentData.lineCode || '-', y)
       y += tableRowHeight
-      drawInfoRow(tr('document.product_code'), data.productCode, tr('document.product_name'), truncate(data.productName, 25), y)
+      drawInfoRow(tr('document.product_code'), documentData.productCode, tr('document.product_name'), truncate(documentData.productName, 25), y)
       y += tableRowHeight
 
       // CA 공정인 경우 절압착품번/완제품품번 추가 (i18n 적용)
-      if (data.processCode === 'CA' && data.crimpProductCode) {
-        drawInfoRow(tr('document.crimp_product_code'), data.crimpProductCode, tr('document.finished_product_code'), data.productCode, y)
+      if (documentData.processCode === 'CA' && documentData.crimpProductCode) {
+        drawInfoRow(tr('document.crimp_product_code'), documentData.crimpProductCode, tr('document.finished_product_code'), documentData.productCode, y)
         y += tableRowHeight
       }
 
-      drawInfoRow(tr('document.operator'), data.workerName || '-', tr('document.remarks'), '-', y)
+      drawInfoRow(tr('document.operator'), documentData.workerName || '-', tr('document.remarks'), '-', y)
       y += tableRowHeight + 6
 
       // ========================================
@@ -255,19 +334,19 @@ export function DocumentPreviewDialog({
         pdf.text(value2, margin.left + labelWidth * 2 + valueWidth * 2 - 2, rowY + 5.5, { align: 'right' })
       }
 
-      const plannedQty = data.plannedQuantity ?? data.quantity
-      const completedQty = data.completedQuantity ?? data.quantity
-      const defectQty = data.defectQuantity ?? 0
+      const plannedQty = documentData.plannedQuantity ?? documentData.quantity
+      const completedQty = documentData.completedQuantity ?? documentData.quantity
+      const defectQty = documentData.defectQuantity ?? 0
 
       drawQtyRow(
-        tr('document.planned_qty'), `${plannedQty.toLocaleString()} ${data.unit}`,
-        tr('document.completed_qty'), `${completedQty.toLocaleString()} ${data.unit}`,
+        tr('document.planned_qty'), `${plannedQty.toLocaleString()} ${documentData.unit}`,
+        tr('document.completed_qty'), `${completedQty.toLocaleString()} ${documentData.unit}`,
         y
       )
       y += tableRowHeight
       drawQtyRow(
-        tr('document.defect_qty'), `${defectQty.toLocaleString()} ${data.unit}`,
-        tr('document.carry_over_out'), `0 ${data.unit}`,
+        tr('document.defect_qty'), `${defectQty.toLocaleString()} ${documentData.unit}`,
+        tr('document.carry_over_out'), `0 ${documentData.unit}`,
         y
       )
       y += tableRowHeight + 6
@@ -275,7 +354,7 @@ export function DocumentPreviewDialog({
       // ========================================
       // 4. 투입 자재 / 투입 이력 테이블 (Barcord 스타일, i18n)
       // ========================================
-      if (showMaterials && data.inputMaterials.length > 0) {
+      if (showMaterials && documentData.inputMaterials.length > 0) {
         pdf.setFontSize(11)
         pdf.setTextColor(25, 118, 210) // #1976d2
         pdf.text(tr('document.input_materials'), margin.left, y)
@@ -311,8 +390,8 @@ export function DocumentPreviewDialog({
 
         // 테이블 데이터
         const dataRowHeight = 6
-        for (let i = 0; i < Math.min(data.inputMaterials.length, 15); i++) {
-          const mat = data.inputMaterials[i]
+        for (let i = 0; i < Math.min(documentData.inputMaterials.length, 15); i++) {
+          const mat = documentData.inputMaterials[i]
 
           // 줄무늬 배경 (짝수행)
           if (i % 2 === 1) {
@@ -359,10 +438,10 @@ export function DocumentPreviewDialog({
           y += dataRowHeight
         }
 
-        if (data.inputMaterials.length > 15) {
+        if (documentData.inputMaterials.length > 15) {
           pdf.setFontSize(8)
           pdf.setTextColor(128, 128, 128)
-          pdf.text(`... 외 ${data.inputMaterials.length - 15}건`, margin.left, y + 4)
+          pdf.text(`... 외 ${documentData.inputMaterials.length - 15}건`, margin.left, y + 4)
           y += 6
         }
 
@@ -385,11 +464,11 @@ export function DocumentPreviewDialog({
       // QR 코드
       if (showQR) {
         const qrData = JSON.stringify({
-          lot: data.lotNumber,
-          process: data.processCode,
-          product: data.productCode,
-          qty: data.quantity,
-          date: formatDate(data.productionDate),
+          lot: documentData.lotNumber,
+          process: documentData.processCode,
+          product: documentData.productCode,
+          qty: documentData.quantity,
+          date: formatDate(documentData.productionDate),
         })
 
         try {
@@ -411,7 +490,7 @@ export function DocumentPreviewDialog({
       if (showBarcode) {
         try {
           const barcodeCanvas = document.createElement('canvas')
-          JsBarcode(barcodeCanvas, data.lotNumber, {
+          JsBarcode(barcodeCanvas, documentData.lotNumber, {
             format: 'CODE128',
             width: 2,
             height: 40,
@@ -433,7 +512,7 @@ export function DocumentPreviewDialog({
       // 바코드 번호 표시
       pdf.setFontSize(9)
       pdf.setTextColor(0, 0, 0)
-      pdf.text(data.lotNumber, PAGE_CONFIG.width / 2, barcodeContentY + 28, { align: 'center' })
+      pdf.text(documentData.lotNumber, PAGE_CONFIG.width / 2, barcodeContentY + 28, { align: 'center' })
 
       // ========================================
       // 6. 서명란 (Barcord 스타일 - 작성/검토/승인)
@@ -509,11 +588,11 @@ export function DocumentPreviewDialog({
 
   // 다운로드
   const handleDownload = () => {
-    if (!pdfUrl || !data) return
+    if (!pdfUrl || !documentData) return
 
     const link = document.createElement('a')
     link.href = pdfUrl
-    link.download = `전표_${data.lotNumber}_${formatDate(data.productionDate)}.pdf`
+    link.download = `전표_${documentData.lotNumber}_${formatDate(documentData.productionDate)}.pdf`
     link.click()
 
     toast.success('전표가 다운로드되었습니다.')
@@ -528,7 +607,7 @@ export function DocumentPreviewDialog({
             생산 전표 미리보기
           </DialogTitle>
           <DialogDescription>
-            {data ? `${data.processName} - ${data.lotNumber}` : '전표를 생성 중입니다...'}
+            {documentData ? `${documentData.processName} - ${documentData.lotNumber}` : (isLoadingDb ? 'DB에서 데이터 조회 중...' : '전표를 생성 중입니다...')}
           </DialogDescription>
         </DialogHeader>
 
@@ -590,29 +669,29 @@ export function DocumentPreviewDialog({
               </div>
             </div>
 
-            {data && (
+            {documentData && (
               <div className="mt-6 p-4 bg-slate-50 rounded-lg">
                 <h3 className="font-semibold mb-3">전표 정보</h3>
                 <div className="grid grid-cols-2 gap-2 text-sm">
                   <div className="flex gap-2">
                     <span className="text-slate-500">LOT:</span>
-                    <Badge variant="outline">{data.lotNumber}</Badge>
+                    <Badge variant="outline">{documentData.lotNumber}</Badge>
                   </div>
                   <div className="flex gap-2">
                     <span className="text-slate-500">공정:</span>
-                    <Badge>{data.processCode}</Badge>
+                    <Badge>{documentData.processCode}</Badge>
                   </div>
                   <div className="flex gap-2">
                     <span className="text-slate-500">품번:</span>
-                    <span>{data.productCode}</span>
+                    <span>{documentData.productCode}</span>
                   </div>
                   <div className="flex gap-2">
                     <span className="text-slate-500">수량:</span>
-                    <span>{data.quantity.toLocaleString()} {data.unit}</span>
+                    <span>{documentData.quantity.toLocaleString()} {documentData.unit}</span>
                   </div>
                   <div className="flex gap-2">
                     <span className="text-slate-500">투입자재:</span>
-                    <span>{data.inputMaterials.length}건</span>
+                    <span>{documentData.inputMaterials.length}건</span>
                   </div>
                 </div>
               </div>

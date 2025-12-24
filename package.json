@@ -6,8 +6,7 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
-    "web": "vite --host --open",
-    "web": "vite --host --open",
+    "web": "BROWSER_ONLY=true vite --host --open",
     "build": "vite build && electron-builder",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "npx tsx prisma/seed.ts",

@@ -62,18 +62,21 @@ import { useAuth } from '../context/AuthContext'
 import { useProduct } from '../context/ProductContext'
 import { useBOM } from '../context/BOMContext'
 import { useMaterial } from '../context/MaterialContext'
-import { parseBarcode, parseHQBarcode, getProcessName, generateBarcodeV2 } from '@/services/barcodeService'
-import { getLinesByProcess, type Line } from '@/services/mock/lineService.mock'
-import { getInProgressLots, type LotWithRelations } from '@/services/mock/productionService.mock'
+import { parseBarcode, parseHQBarcode, getProcessName, generateBarcodeV2, isTempLotNumber } from '@/services/barcodeService'
+import { hasBusinessAPI, getAPI } from '@/lib/electronBridge'
+import { useStock, type ProcessStockStatus } from '../context/StockContext'
+import { type LotWithRelations } from '../context/ProductionContext'
 import { BundleDialog, LabelPreviewDialog, DocumentPreviewDialog, type DocumentData, type InputMaterialInfo } from '../components/dialogs'
-import {
-  deductByBOM,
-  rollbackBOMDeduction,
-  registerProcessStock,
-  checkProcessStockStatus,
-  type ProcessStockStatus,
-} from '@/services/mock/stockService.mock'
 import { createLabel, printLabel, downloadLabel } from '@/services/labelService'
+
+// Line 타입 (Electron API 반환값)
+interface Line {
+  id: number
+  code: string
+  name: string
+  processCode: string
+  isActive: boolean
+}
 
 // 스캔된 아이템 타입
 interface ScannedItem {
@@ -122,11 +125,18 @@ export const ProcessView = () => {
     startProduction,
     completeProduction,
     getLotByNumber,
+    getLotsByProcess,
     setCurrentLot,
     setCurrentProcess,
     refreshTodayLots,
     clearError,
   } = useProduction()
+  const {
+    deductByBOM,
+    rollbackBOMDeduction,
+    registerProcessStock,
+    checkProcessStockStatus,
+  } = useStock()
 
   const [barcode, setBarcode] = useState('')
   const [lines, setLines] = useState<Line[]>([])
@@ -194,6 +204,51 @@ export const ProcessView = () => {
 
     return lv4Group.crimpGroups.map(cg => cg.crimpCode).filter(code => code !== '(미지정)')
   }, [selectedProductCode, bomGroups])
+
+  // 번들 다이얼로그용 절압착품번 목록 (현재 선택 또는 히스토리 LOT 기반)
+  const bundleCrimpProducts = useMemo(() => {
+    // 현재 선택된 완제품의 절압착품번 사용
+    if (crimpCodes.length > 0) {
+      return crimpCodes.map(code => ({
+        code,
+        name: code,
+        parentProductCode: selectedProductCode,
+        parentProductName: selectedProduct?.name,
+      }))
+    }
+
+    // 히스토리 LOT에서 절압착품번 추출
+    if (selectedHistoryLot?.crimpCode) {
+      return [{
+        code: selectedHistoryLot.crimpCode,
+        name: selectedHistoryLot.crimpCode,
+        parentProductCode: selectedHistoryLot.productCode,
+        parentProductName: selectedHistoryLot.productName,
+      }]
+    }
+
+    // 히스토리 LOT의 완제품으로 BOM에서 검색
+    const historyProductCode = selectedHistoryLot?.productCode
+    if (historyProductCode) {
+      const bomGroup = bomGroups.find(g => g.productCode === historyProductCode)
+      if (bomGroup) {
+        const lv4Group = bomGroup.levelGroups.find(lg => lg.level === 4)
+        if (lv4Group?.crimpGroups) {
+          return lv4Group.crimpGroups
+            .map(cg => cg.crimpCode)
+            .filter(code => code !== '(미지정)')
+            .map(code => ({
+              code,
+              name: code,
+              parentProductCode: historyProductCode,
+              parentProductName: selectedHistoryLot?.productName,
+            }))
+        }
+      }
+    }
+
+    return []
+  }, [crimpCodes, selectedProductCode, selectedProduct, selectedHistoryLot, bomGroups])
 
   // CA 공정에서 허용된 자재 목록 (BOM LV4 기반)
   const allowedMaterialCodes = useMemo(() => {
@@ -367,23 +422,41 @@ export const ProcessView = () => {
     setSelectedTaskId(null)
   }, [processCode])
 
-  // 라인 목록 로드
+  // 라인 목록 로드 (Electron API + 브라우저 기본 라인)
   const loadLines = async () => {
+    // 브라우저 환경: 기본 라인 제공
+    if (!hasBusinessAPI()) {
+      console.log('[ProcessView] Browser mode: 기본 라인 제공')
+      const defaultLines: Line[] = [
+        { id: 1, code: `${processCode}-L1`, name: `${processCode} 라인 1`, processCode, isActive: true },
+        { id: 2, code: `${processCode}-L2`, name: `${processCode} 라인 2`, processCode, isActive: true },
+        { id: 3, code: `${processCode}-L3`, name: `${processCode} 라인 3`, processCode, isActive: true },
+      ]
+      setLines(defaultLines)
+      setCurrentLine(defaultLines[0])
+      return
+    }
+
+    // Electron 환경: DB에서 라인 로드
     try {
-      const lineList = await getLinesByProcess(processCode)
-      setLines(lineList)
-      if (lineList.length > 0) {
-        setCurrentLine(lineList[0])
+      const api = getAPI()
+      const result = await api!.line.getByProcess(processCode)
+      if (result.success && result.data) {
+        const lineList = result.data as Line[]
+        setLines(lineList)
+        if (lineList.length > 0) {
+          setCurrentLine(lineList[0])
+        }
       }
     } catch (err) {
       console.error('Failed to load lines:', err)
     }
   }
 
-  // 진행 중인 작업 목록 로드
+  // 진행 중인 작업 목록 로드 (ProductionContext 사용)
   const loadInProgressTasks = async () => {
     try {
-      const tasks = await getInProgressLots({ processCode })
+      const tasks = await getLotsByProcess(processCode, 'IN_PROGRESS')
       setInProgressTasks(tasks)
     } catch (err) {
       console.error('Failed to load in-progress tasks:', err)
@@ -426,6 +499,53 @@ export const ProcessView = () => {
     }
   }, [processId])
 
+  // 자동 스캔 타이머 참조
+  const autoScanTimerRef = useRef<NodeJS.Timeout | null>(null)
+
+  // 바코드 붙여넣기 핸들러 - 자동 등록
+  const handleBarcodePaste = useCallback((e: React.ClipboardEvent<HTMLInputElement>) => {
+    const pastedText = e.clipboardData.getData('text').trim()
+    if (pastedText && pastedText.length >= 5) {
+      // 붙여넣기 후 짧은 딜레이로 자동 제출
+      setTimeout(() => {
+        const form = e.currentTarget.form
+        if (form) {
+          form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }))
+        }
+      }, 100)
+    }
+  }, [])
+
+  // 바코드 입력 변경 핸들러 - 스캐너 자동 감지
+  const handleBarcodeChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value
+    setBarcode(value)
+
+    // 기존 타이머 취소
+    if (autoScanTimerRef.current) {
+      clearTimeout(autoScanTimerRef.current)
+    }
+
+    // 바코드가 일정 길이 이상이면 자동 제출 (스캐너는 빠르게 입력)
+    if (value.trim().length >= 10) {
+      autoScanTimerRef.current = setTimeout(() => {
+        const form = e.target.form
+        if (form && value.trim().length >= 10) {
+          form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }))
+        }
+      }, 300) // 300ms 후 자동 제출 (스캐너 입력 완료 대기)
+    }
+  }, [])
+
+  // 컴포넌트 언마운트 시 타이머 정리
+  useEffect(() => {
+    return () => {
+      if (autoScanTimerRef.current) {
+        clearTimeout(autoScanTimerRef.current)
+      }
+    }
+  }, [])
+
   // 바코드 타입 추론
   const inferBarcodeType = (barcode: string, parsed: ReturnType<typeof parseBarcode>): ScannedItem['type'] => {
     if (!parsed.isValid) return 'material'
@@ -465,6 +585,7 @@ export const ProcessView = () => {
     if (!currentLine) {
       toast.error('라인을 선택해주세요.')
       setBarcode('')
+      setTimeout(() => barcodeInputRef.current?.focus(), 50)
       return
     }
 
@@ -472,6 +593,7 @@ export const ProcessView = () => {
     if (scannedItems.some(item => item.barcode === trimmedBarcode)) {
       toast.error('이미 스캔된 바코드입니다.')
       setBarcode('')
+      setTimeout(() => barcodeInputRef.current?.focus(), 50)
       return
     }
 
@@ -479,6 +601,33 @@ export const ProcessView = () => {
     const parsed = parseBarcode(trimmedBarcode)
     const hqParsed = parseHQBarcode(trimmedBarcode)
     const itemType = inferBarcodeType(trimmedBarcode, parsed)
+
+    // production/semi_product 바코드 DB 검증
+    if ((itemType === 'production' || itemType === 'semi_product') && parsed.isValid) {
+      if (hasBusinessAPI()) {
+        try {
+          const api = getAPI()
+          const result = await api!.production.getLotByNumber(trimmedBarcode)
+          if (!result.success || !result.data) {
+            // DB에 LOT이 없으면 경고 (스캔은 허용)
+            toast.warning(
+              `DB에 등록되지 않은 LOT입니다: ${trimmedBarcode}\n(새로운 생산 LOT으로 등록됩니다)`,
+              { duration: 4000 }
+            )
+          } else {
+            // DB에 LOT이 있으면 정보 표시
+            const lot = result.data as LotWithRelations
+            toast.info(
+              `기존 LOT 확인: ${lot.lotNumber}\n상태: ${lot.status}, 수량: ${lot.quantity}`,
+              { duration: 3000 }
+            )
+          }
+        } catch (error) {
+          console.error('LOT 조회 실패:', error)
+          // 조회 실패해도 스캔은 진행
+        }
+      }
+    }
 
     // 자재 조회 (바코드에서 추출한 코드로 검색)
     let matchedMaterial = null
@@ -506,6 +655,7 @@ export const ProcessView = () => {
             { duration: 5000 }
           )
           setBarcode('')
+          setTimeout(() => barcodeInputRef.current?.focus(), 50)
           return
         }
       } else if (allowedMaterialCodes.size > 0) {
@@ -532,6 +682,7 @@ export const ProcessView = () => {
         { duration: 5000 }
       )
       setBarcode('')
+      setTimeout(() => barcodeInputRef.current?.focus(), 50)
       return
     }
 
@@ -549,6 +700,7 @@ export const ProcessView = () => {
       if (!registerResult.success) {
         toast.error(registerResult.error || '공정 재고 등록 실패')
         setBarcode('')
+        setTimeout(() => barcodeInputRef.current?.focus(), 50)
         return
       }
 
@@ -584,6 +736,9 @@ export const ProcessView = () => {
       toast.success(`스캔 완료: ${matchedMaterial?.code || trimmedBarcode}`)
     }
     setBarcode('')
+
+    // 연속 스캔을 위해 바코드 입력 필드에 포커스 복귀
+    setTimeout(() => barcodeInputRef.current?.focus(), 50)
 
     // 전체 선택 상태 업데이트
     setSelectAll(scannedItems.every(item => item.isSelected) && isValidMaterial)
@@ -824,6 +979,7 @@ export const ProcessView = () => {
   }
 
   // 작업 완료 - 전표/바코드 생성 및 출력
+  // 완료 시점에 최종 LOT 번호가 생성됨 (형식: {공정코드}{반제품품번}Q{완료수량}-{YYMMDD}-{일련번호})
   const handleComplete = async () => {
     if (!currentLot) return
 
@@ -834,13 +990,22 @@ export const ProcessView = () => {
 
     setIsProcessing(true)
     try {
-      await completeProduction({
+      // 반제품 품번 결정: CA 공정은 절압착품번, 기타는 완제품 코드
+      const semiProductCode = processCode === 'CA'
+        ? (selectedCrimpCode || currentLot.crimpCode || currentLot.product?.code)
+        : currentLot.product?.code
+
+      const completedLot = await completeProduction({
         lotId: currentLot.id,
         completedQty,
         defectQty,
+        semiProductCode, // 완료 시점 LOT 번호 생성에 사용
       })
 
-      toast.success(`LOT ${currentLot.lotNumber} 완료 (${completedQty}EA)`)
+      // 완료된 LOT 정보로 상태 업데이트 (새 LOT 번호 반영)
+      setCurrentLot(completedLot)
+
+      toast.success(`LOT ${completedLot.lotNumber} 완료 (${completedQty}EA)`)
 
       // 작업 완료 후 전표 다이얼로그 표시 (Barcord 프로젝트 워크플로우)
       // 전표 출력 후 라벨 출력 가능
@@ -1115,7 +1280,8 @@ export const ProcessView = () => {
                   ref={barcodeInputRef}
                   placeholder="전공정 바코드를 스캔하세요"
                   value={barcode}
-                  onChange={(e) => setBarcode(e.target.value)}
+                  onChange={handleBarcodeChange}
+                  onPaste={handleBarcodePaste}
                   className="h-12 text-lg font-mono border-2 focus:border-blue-500"
                   autoComplete="off"
                   disabled={isProcessing}
@@ -1273,8 +1439,12 @@ export const ProcessView = () => {
                     >
                       <div className="flex justify-between items-start">
                         <div className="flex-1 min-w-0">
-                          <div className="font-mono text-xs text-slate-600 truncate">
-                            {task.lotNumber}
+                          <div className="font-mono text-xs truncate">
+                            {isTempLotNumber(task.lotNumber) ? (
+                              <span className="text-amber-600">(임시)</span>
+                            ) : (
+                              <span className="text-slate-600">{task.lotNumber}</span>
+                            )}
                           </div>
                           <div className="font-medium text-slate-900 truncate">
                             {task.product?.name || '(미지정)'}
@@ -1317,9 +1487,18 @@ export const ProcessView = () => {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <Label className="text-slate-500">LOT 번호</Label>
-                      <div className="font-mono text-sm font-bold text-slate-900 bg-slate-100 p-2 rounded">
-                        {currentLot.lotNumber}
+                      <div className={`font-mono text-sm font-bold p-2 rounded ${
+                        isTempLotNumber(currentLot.lotNumber)
+                          ? 'text-amber-700 bg-amber-50 border border-amber-200'
+                          : 'text-slate-900 bg-slate-100'
+                      }`}>
+                        {isTempLotNumber(currentLot.lotNumber)
+                          ? '(완료 시 생성)'
+                          : currentLot.lotNumber}
                       </div>
+                      {isTempLotNumber(currentLot.lotNumber) && (
+                        <p className="text-xs text-amber-600 mt-1">작업 완료 시 최종 LOT 번호가 생성됩니다.</p>
+                      )}
                     </div>
                     <div className="space-y-1">
                       <Label className="text-slate-500">지시 수량</Label>
@@ -1556,9 +1735,13 @@ export const ProcessView = () => {
                           </div>
                         </TableCell>
                         <TableCell className="font-mono text-xs">
-                          {lot.lotNumber.length > 15
-                            ? `...${lot.lotNumber.slice(-12)}`
-                            : lot.lotNumber}
+                          {isTempLotNumber(lot.lotNumber) ? (
+                            <span className="text-amber-600">(임시)</span>
+                          ) : lot.lotNumber.length > 15 ? (
+                            `...${lot.lotNumber.slice(-12)}`
+                          ) : (
+                            lot.lotNumber
+                          )}
                         </TableCell>
                         <TableCell className="text-right font-bold text-sm">
                           {lot.completedQty}/{lot.plannedQty}
@@ -1637,11 +1820,18 @@ export const ProcessView = () => {
       {processCode === 'CA' && (
         <BundleDialog
           open={showBundleDialog}
-          onOpenChange={setShowBundleDialog}
+          onOpenChange={(open) => {
+            setShowBundleDialog(open)
+            if (!open) {
+              setSelectedHistoryLot(null)
+            }
+          }}
           onComplete={(bundle) => {
             toast.success(`번들 ${bundle.bundleNo} 완료`)
             refreshTodayLots()
+            setSelectedHistoryLot(null)
           }}
+          crimpProducts={bundleCrimpProducts}
         />
       )}
 
@@ -1662,6 +1852,7 @@ export const ProcessView = () => {
               }
             }
           }}
+          lotId={selectedHistoryLot?.id || currentLot?.id}
           data={{
             lotNumber: (selectedHistoryLot || currentLot)!.lotNumber,
             productCode: (selectedHistoryLot || currentLot)!.product?.code || selectedProductCode || '-',

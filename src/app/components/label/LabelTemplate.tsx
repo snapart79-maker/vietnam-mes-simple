@@ -34,13 +34,21 @@ export function LabelTemplate({
   onDownload,
   className = '',
 }: LabelTemplateProps) {
-  const [template, setTemplate] = useState<LabelTemplateType>('100x150mm')
+  const [template, setTemplate] = useState<LabelTemplateType>('75x45mm')
   const [showQR, setShowQR] = useState(true)
   const [showBarcode, setShowBarcode] = useState(true)
   const [isGenerating, setIsGenerating] = useState(false)
+  // 사용자 정의 크기
+  const [customWidth, setCustomWidth] = useState(75)
+  const [customHeight, setCustomHeight] = useState(45)
 
   const templates = getTemplates()
   const selectedTemplate = templates.find((t) => t.id === template)
+  const isCustomTemplate = template === 'custom'
+
+  // 실제 표시할 크기 (custom일 때는 사용자 입력값, 아니면 선택된 템플릿 크기)
+  const displayWidth = isCustomTemplate ? customWidth : (selectedTemplate?.width || 75)
+  const displayHeight = isCustomTemplate ? customHeight : (selectedTemplate?.height || 45)
 
   // QR 데이터 생성
   const qrData: QRCodeData = {
@@ -51,11 +59,19 @@ export function LabelTemplate({
     date: data.date,
   }
 
+  // 라벨 옵션 생성
+  const getLabelOptions = () => ({
+    template,
+    showQR,
+    showBarcode,
+    ...(isCustomTemplate && { customWidth, customHeight }),
+  })
+
   // PDF 생성 및 다운로드
   const handleDownload = async () => {
     setIsGenerating(true)
     try {
-      const pdf = await createLabel(data, { template, showQR, showBarcode })
+      const pdf = await createLabel(data, getLabelOptions())
       downloadLabel(pdf, `label_${data.lotNumber}`)
       onDownload?.()
     } catch (error) {
@@ -70,7 +86,7 @@ export function LabelTemplate({
   const handlePrint = async () => {
     setIsGenerating(true)
     try {
-      const pdf = await createLabel(data, { template, showQR, showBarcode })
+      const pdf = await createLabel(data, getLabelOptions())
       printLabel(pdf)
       onPrint?.()
     } catch (error) {
@@ -85,7 +101,7 @@ export function LabelTemplate({
   const handlePreview = async () => {
     setIsGenerating(true)
     try {
-      const pdf = await createLabel(data, { template, showQR, showBarcode })
+      const pdf = await createLabel(data, getLabelOptions())
       const url = previewLabel(pdf)
       window.open(url, '_blank')
     } catch (error) {
@@ -116,6 +132,35 @@ export function LabelTemplate({
           </select>
         </div>
 
+        {/* 사용자 정의 크기 입력 */}
+        {isCustomTemplate && (
+          <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-gray-600">너비 (mm)</label>
+              <input
+                type="number"
+                value={customWidth}
+                onChange={(e) => setCustomWidth(Math.max(20, Math.min(200, Number(e.target.value))))}
+                min={20}
+                max={200}
+                className="w-20 px-2 py-1 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <span className="text-gray-400 mt-5">x</span>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-gray-600">높이 (mm)</label>
+              <input
+                type="number"
+                value={customHeight}
+                onChange={(e) => setCustomHeight(Math.max(15, Math.min(150, Number(e.target.value))))}
+                min={15}
+                max={150}
+                className="w-20 px-2 py-1 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+        )}
+
         {/* QR/바코드 토글 */}
         <div className="flex items-center gap-4">
           <label className="flex items-center gap-2">
@@ -144,8 +189,8 @@ export function LabelTemplate({
         <div
           className="bg-white border-2 border-dashed border-gray-300 shadow-lg"
           style={{
-            width: `${(selectedTemplate?.width || 100) * 2.5}px`,
-            minHeight: `${(selectedTemplate?.height || 150) * 2.5}px`,
+            width: `${displayWidth * 2.5}px`,
+            minHeight: `${displayHeight * 2.5}px`,
             padding: '16px',
           }}
         >
@@ -193,7 +238,7 @@ export function LabelTemplate({
             <div className="flex justify-center mb-3">
               <QRCodeView
                 data={qrData}
-                size={template === '50x80mm' ? 60 : template === '75x125mm' ? 80 : 100}
+                size={Math.max(50, Math.min(100, Math.round(displayHeight * 1.5)))}
                 level="M"
               />
             </div>
@@ -204,9 +249,9 @@ export function LabelTemplate({
             <div className="flex justify-center">
               <BarcodeView
                 value={data.lotNumber}
-                height={template === '50x80mm' ? 30 : template === '75x125mm' ? 40 : 50}
-                width={template === '50x80mm' ? 1 : 2}
-                fontSize={template === '50x80mm' ? 8 : 10}
+                height={Math.max(25, Math.min(50, Math.round(displayHeight * 0.7)))}
+                width={displayWidth < 60 ? 1 : 2}
+                fontSize={displayWidth < 60 ? 8 : 10}
                 margin={5}
               />
             </div>

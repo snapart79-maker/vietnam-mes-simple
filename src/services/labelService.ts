@@ -28,7 +28,7 @@ function tr(key: string, params?: Record<string, string | number>): string {
 // ============================================
 
 // Barcord 스타일 라벨 크기 (작은 사이즈)
-export type LabelTemplate = '75x45mm' | '50x30mm' | '100x50mm' | '80x40mm' | '60x40mm'
+export type LabelTemplate = '75x45mm' | '50x30mm' | '100x50mm' | '80x40mm' | '60x40mm' | 'custom'
 
 export interface LotLabelData {
   lotNumber: string
@@ -47,6 +47,9 @@ export interface LabelOptions {
   showBarcode: boolean
   showLogo: boolean
   copies: number
+  // 사용자 정의 크기 (template이 'custom'일 때 사용)
+  customWidth?: number  // mm
+  customHeight?: number // mm
 }
 
 interface TemplateConfig {
@@ -67,7 +70,7 @@ interface TemplateConfig {
 // Constants (Barcord 스타일 라벨 크기)
 // ============================================
 
-const TEMPLATE_CONFIGS: Record<LabelTemplate, TemplateConfig> = {
+const TEMPLATE_CONFIGS: Record<Exclude<LabelTemplate, 'custom'>, TemplateConfig> = {
   '75x45mm': {
     width: 75,
     height: 45,
@@ -113,6 +116,40 @@ const TEMPLATE_CONFIGS: Record<LabelTemplate, TemplateConfig> = {
     barcodeWidth: 50,
     barcodeHeight: 7,
   },
+}
+
+/**
+ * 사용자 정의 크기로 TemplateConfig 생성
+ */
+function createCustomTemplateConfig(width: number, height: number): TemplateConfig {
+  // 크기에 따라 폰트 크기와 요소 크기 비율 조정
+  const scaleFactor = Math.min(width, height) / 45  // 기준: 75x45mm
+
+  return {
+    width,
+    height,
+    orientation: width >= height ? 'landscape' : 'portrait',
+    fontSize: {
+      title: Math.max(8, Math.min(14, Math.round(10 * scaleFactor))),
+      normal: Math.max(6, Math.min(10, Math.round(8 * scaleFactor))),
+      small: Math.max(5, Math.min(8, Math.round(6 * scaleFactor))),
+    },
+    qrSize: Math.max(7, Math.min(15, Math.round(10 * scaleFactor))),
+    barcodeWidth: Math.max(40, Math.min(100, Math.round(width * 0.8))),
+    barcodeHeight: Math.max(6, Math.min(12, Math.round(8 * scaleFactor))),
+  }
+}
+
+/**
+ * 옵션에서 TemplateConfig 가져오기
+ */
+function getTemplateConfig(opts: LabelOptions): TemplateConfig {
+  if (opts.template === 'custom') {
+    const width = opts.customWidth || 75
+    const height = opts.customHeight || 45
+    return createCustomTemplateConfig(width, height)
+  }
+  return TEMPLATE_CONFIGS[opts.template]
 }
 
 const DEFAULT_OPTIONS: LabelOptions = {
@@ -231,8 +268,8 @@ export async function createLabel(
   data: LotLabelData,
   options: Partial<LabelOptions> = {}
 ): Promise<jsPDF> {
-  const opts = { ...DEFAULT_OPTIONS, ...options }
-  const config = TEMPLATE_CONFIGS[opts.template]
+  const opts = { ...DEFAULT_OPTIONS, ...options } as LabelOptions
+  const config = getTemplateConfig(opts)
 
   // PDF 생성
   const pdf = new jsPDF({
@@ -368,8 +405,8 @@ export async function createBundleLabel(
   date: string,
   options: Partial<LabelOptions> = {}
 ): Promise<jsPDF> {
-  const opts = { ...DEFAULT_OPTIONS, ...options }
-  const config = TEMPLATE_CONFIGS[opts.template]
+  const opts = { ...DEFAULT_OPTIONS, ...options } as LabelOptions
+  const config = getTemplateConfig(opts)
 
   const pdf = new jsPDF({
     orientation: config.orientation,
@@ -531,6 +568,7 @@ export function getTemplates(): Array<{
   name: string
   width: number
   height: number
+  isCustom?: boolean
 }> {
   return [
     { id: '75x45mm', name: '75 x 45 (기본)', width: 75, height: 45 },
@@ -538,6 +576,7 @@ export function getTemplates(): Array<{
     { id: '100x50mm', name: '100 x 50', width: 100, height: 50 },
     { id: '80x40mm', name: '80 x 40', width: 80, height: 40 },
     { id: '60x40mm', name: '60 x 40', width: 60, height: 40 },
+    { id: 'custom', name: '사용자 정의', width: 0, height: 0, isCustom: true },
   ]
 }
 
@@ -552,8 +591,8 @@ export async function createMultipleLabels(
     throw new Error('라벨 데이터가 없습니다.')
   }
 
-  const opts = { ...DEFAULT_OPTIONS, ...options }
-  const config = TEMPLATE_CONFIGS[opts.template]
+  const opts = { ...DEFAULT_OPTIONS, ...options } as LabelOptions
+  const config = getTemplateConfig(opts)
 
   const pdf = new jsPDF({
     orientation: config.orientation,

@@ -1038,3 +1038,5 @@ export const MasterData = () => {
     </div>
   );
 };
+
+export default MasterData;

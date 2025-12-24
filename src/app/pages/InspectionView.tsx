@@ -25,16 +25,36 @@ import {
 import { CheckCircle2, XCircle, Scan, AlertTriangle, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '../context/AuthContext'
+import { useProduction } from '../context/ProductionContext'
 import { parseBarcode } from '@/services/barcodeService'
-// Mock 서비스 사용 (브라우저에서 Prisma 사용 불가)
-import { getLotByNumber } from '@/services/mock/productionService.mock'
-import {
-  createInspection,
-  getTodayInspectionSummary,
-  type InspectionStats,
-  type InspectionType,
-  type InspectionResult,
-} from '@/services/mock/inspectionService.mock'
+import { hasBusinessAPI, getAPI } from '@/lib/electronBridge'
+
+// 검사 관련 타입 정의
+export type InspectionType = 'CIRCUIT' | 'VISUAL' | 'CRIMP'
+export type InspectionResult = 'PASS' | 'FAIL' | 'PENDING'
+
+export interface InspectionStats {
+  total: number
+  pass: number
+  fail: number
+  pending: number
+  byType: {
+    [key: string]: {
+      total: number
+      pass: number
+      fail: number
+    }
+  }
+}
+
+interface CreateInspectionInput {
+  lotId: number
+  type: InspectionType
+  result: InspectionResult
+  inspectorId?: string
+  defectReason?: string
+  defectQty?: number
+}
 
 interface CurrentLot {
   id: number
@@ -45,9 +65,49 @@ interface CurrentLot {
   quantity: number
 }
 
+// 검사 생성 함수 (Electron API)
+async function createInspection(input: CreateInspectionInput): Promise<boolean> {
+  if (!hasBusinessAPI()) {
+    console.warn('[InspectionView] Electron API not available')
+    return false
+  }
+  try {
+    const api = getAPI()
+    const result = await api!.inspection.create({
+      lotId: input.lotId,
+      inspectorId: input.inspectorId,
+      result: input.result,
+      defectCount: input.defectQty,
+      defectType: input.defectReason,
+      notes: input.type,
+    })
+    return result.success
+  } catch (err) {
+    console.error('[InspectionView] createInspection error:', err)
+    return false
+  }
+}
+
+// 금일 통계 조회 (로컬 스텁 - API 미구현)
+async function getTodayInspectionSummary(): Promise<InspectionStats> {
+  // TODO: Electron API에 통계 기능 추가 후 구현
+  return {
+    total: 0,
+    pass: 0,
+    fail: 0,
+    pending: 0,
+    byType: {
+      CIRCUIT: { total: 0, pass: 0, fail: 0 },
+      VISUAL: { total: 0, pass: 0, fail: 0 },
+      CRIMP: { total: 0, pass: 0, fail: 0 },
+    },
+  }
+}
+
 export const InspectionView = () => {
   const { type } = useParams<{ type: string }>()
   const { user } = useAuth()
+  const { getLotByNumber } = useProduction()
   const [barcode, setBarcode] = useState('')
   const [currentLot, setCurrentLot] = useState<CurrentLot | null>(null)
   const [failModalOpen, setFailModalOpen] = useState(false)

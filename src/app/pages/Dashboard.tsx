@@ -37,16 +37,93 @@ import {
   Loader2,
   RefreshCw,
 } from 'lucide-react'
-// Mock 서비스 사용 (브라우저에서 Prisma 사용 불가)
-import {
-  getDashboardStats,
-  getProcessAchievement,
-  getLowStockItems,
-  type DashboardStats,
-  type ProcessAchievement,
-  type LowStockItem,
-} from '@/services/mock/dashboardService.mock'
+import { hasBusinessAPI, getAPI } from '@/lib/electronBridge'
 import { useAuth } from '../context/AuthContext'
+
+// ===== 타입 정의 =====
+export interface DashboardStats {
+  totalProduction: number
+  todayProduction: number
+  totalDefects: number
+  passRate: number
+  defectRate: number
+  achievementRate: number
+  completedLots: number
+  inProgressLots: number
+  lowStockCount: number
+  activeLines: number
+  totalLines: number
+}
+
+export interface ProcessAchievement {
+  processCode: string
+  processName: string
+  target: number
+  actual: number
+  rate: number
+}
+
+export interface LowStockItem {
+  materialId: number
+  materialCode: string
+  materialName: string
+  currentStock: number
+  safeStock: number
+  unit: string
+}
+
+// ===== 로컬 스텁 함수 =====
+
+// 대시보드 통계 조회 (스텁 - API 미구현)
+async function getDashboardStats(): Promise<DashboardStats> {
+  // TODO: Electron API 구현 필요
+  console.warn('[Dashboard] getDashboardStats: API not implemented')
+  return {
+    totalProduction: 0,
+    todayProduction: 0,
+    totalDefects: 0,
+    passRate: 100,
+    defectRate: 0,
+    achievementRate: 0,
+    completedLots: 0,
+    inProgressLots: 0,
+    lowStockCount: 0,
+    activeLines: 0,
+    totalLines: 5,
+  }
+}
+
+// 공정별 달성률 조회 (스텁 - API 미구현)
+async function getProcessAchievement(): Promise<ProcessAchievement[]> {
+  // TODO: Electron API 구현 필요
+  console.warn('[Dashboard] getProcessAchievement: API not implemented')
+  return [
+    { processCode: 'CA', processName: '자동절단압착', target: 100, actual: 0, rate: 0 },
+    { processCode: 'MC', processName: '수동압착', target: 100, actual: 0, rate: 0 },
+    { processCode: 'PA', processName: '제품조립', target: 100, actual: 0, rate: 0 },
+    { processCode: 'VI', processName: '육안검사', target: 100, actual: 0, rate: 0 },
+  ]
+}
+
+// 저재고 품목 조회 (Electron API 사용)
+async function getLowStockItems(): Promise<LowStockItem[]> {
+  if (!hasBusinessAPI()) {
+    console.warn('[Dashboard] getLowStockItems: Electron API not available')
+    return []
+  }
+  try {
+    const api = getAPI()
+    const result = await api!.stock.getLowStock()
+    if (!result.success || !result.data) {
+      return []
+    }
+    // API 결과를 LowStockItem 형식으로 변환
+    return (result.data as LowStockItem[]) || []
+  } catch (err) {
+    console.error('[Dashboard] getLowStockItems error:', err)
+    return []
+  }
+}
 
 export const Dashboard = () => {
   const navigate = useNavigate()
@@ -403,18 +480,18 @@ export const Dashboard = () => {
             <div className="space-y-4">
               {lowStockItems.map((item) => (
                 <div
-                  key={item.id}
+                  key={item.materialId}
                   className="flex items-center justify-between p-3 bg-white rounded-lg border border-orange-100 shadow-sm"
                 >
                   <div>
                     <p className="text-sm font-semibold text-slate-800">
-                      {item.name}
+                      {item.materialName}
                     </p>
-                    <p className="text-xs text-slate-500">{item.code}</p>
+                    <p className="text-xs text-slate-500">{item.materialCode}</p>
                   </div>
                   <div className="text-right">
                     <p className="text-sm font-bold text-red-600">
-                      {item.stock.toLocaleString()} {item.unit}
+                      {item.currentStock.toLocaleString()} {item.unit}
                     </p>
                     <p className="text-xs text-slate-400">
                       최소 {item.safeStock.toLocaleString()} {item.unit}

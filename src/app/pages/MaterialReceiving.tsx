@@ -40,14 +40,8 @@ import {
 import { toast } from 'sonner'
 import { downloadImportTemplate } from '@/services/excelImportService'
 import { parseHQBarcode, type ParsedHQBarcode } from '@/services/barcodeService'
-// Mock 서비스 사용 (브라우저에서 Prisma 사용 불가)
-import {
-  registerProcessStock,
-  checkProcessStockStatus,
-  getTodayProcessReceivings,
-  type ProcessStockInput,
-  type ProcessReceivingRecord,
-} from '@/services/mock/stockService.mock'
+// StockContext 훅 사용 (Electron API 연결)
+import { useStock, type ProcessStockInput, type ProcessReceivingRecord } from '@/app/context/StockContext'
 import { ExcelImportDialog } from '../components/dialogs/ExcelImportDialog'
 // MaterialContext에서 HQ 코드로 자재 조회
 import { useMaterial } from '@/app/context/MaterialContext'
@@ -87,6 +81,14 @@ export const MaterialReceiving = () => {
 
   // MaterialContext에서 자재 조회 함수 가져오기
   const { getMaterialByHQCode, getMaterialByCode } = useMaterial()
+
+  // StockContext에서 재고 함수 가져오기
+  const {
+    registerProcessStock,
+    checkProcessStockStatus,
+    getTodayProcessReceivings,
+    deleteStockItems,
+  } = useStock()
 
   // 자재 투입 공정만 필터링 (hasMaterialInput: true)
   const materialInputProcesses = PROCESS_SEED_DATA.filter(p => p.hasMaterialInput)
@@ -372,15 +374,35 @@ export const MaterialReceiving = () => {
     )
   }
 
-  // 확정 목록 선택 삭제 (표시만 삭제, 실제 재고는 유지)
-  const handleDeleteConfirmed = () => {
-    const selectedCount = confirmedItems.filter((i) => i.selected).length
+  // 확정 목록 선택 삭제 (공정 재고 삭제)
+  const handleDeleteConfirmed = async () => {
+    const selectedItems = confirmedItems.filter((i) => i.selected)
+    const selectedCount = selectedItems.length
     if (selectedCount === 0) {
       toast.error('삭제할 항목을 선택하세요.')
       return
     }
-    setConfirmedItems((prev) => prev.filter((i) => !i.selected))
-    toast.success(`${selectedCount}건 목록에서 삭제됨 (재고는 유지됨)`)
+
+    try {
+      // 선택된 항목의 ID 추출 (재고 ID)
+      const ids = selectedItems.map((item) => item.id)
+
+      // 재고 삭제 호출 (MOCK_STOCKS에서 삭제)
+      const deletedCount = await deleteStockItems(ids)
+
+      if (deletedCount > 0) {
+        // 로컬 state에서도 제거
+        setConfirmedItems((prev) => prev.filter((i) => !i.selected))
+        toast.success(`${deletedCount}건 삭제 완료`)
+      } else {
+        // 삭제 실패해도 로컬 state에서 제거 시도
+        setConfirmedItems((prev) => prev.filter((i) => !i.selected))
+        toast.info('삭제 처리 중 일부 항목이 처리되지 않았습니다.')
+      }
+    } catch (error) {
+      console.error('Delete failed:', error)
+      toast.error('삭제 중 오류가 발생했습니다.')
+    }
   }
 
   const pendingErrorCount = pendingItems.filter((i) => i.status === 'error').length

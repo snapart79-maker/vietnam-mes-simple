@@ -26,15 +26,7 @@ import { Search, Download, Layers, RefreshCw, Trash2, ArrowUpRight, FolderTree, 
 import { Badge } from '../components/ui/badge';
 import { downloadExcel } from '@/lib/excelUtils';
 import { toast } from 'sonner';
-import {
-  getAllStocks,
-  getStockSummary,
-  getStocksByProcess,
-  getProcessStockSummary,
-  deleteStockItems,
-  resetAllStockData,
-  type StockItem,
-} from '@/services/mock/stockService.mock';
+import { useStock, type StockItem } from '../context/StockContext';
 
 // 공정 목록 (Phase C: 공정별 필터링)
 const PROCESS_OPTIONS = [
@@ -55,6 +47,17 @@ interface SelectableStockItem extends StockItem {
 }
 
 export const MaterialStock = () => {
+  // StockContext 사용
+  const {
+    getAllStocks,
+    getStockSummary,
+    getStocksByProcess,
+    getProcessStockSummary,
+    deleteStockItems: contextDeleteStockItems,
+    resetAllStockData: contextResetAllStockData,
+    isLoading: contextLoading,
+  } = useStock();
+
   const [showExhausted, setShowExhausted] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('lot');
@@ -124,7 +127,7 @@ export const MaterialStock = () => {
 
   useEffect(() => {
     loadData();
-  }, [showExhausted, selectedProcess]); // Phase C: selectedProcess 추가
+  }, [showExhausted, selectedProcess, getAllStocks, getStockSummary, getStocksByProcess, getProcessStockSummary]); // Context 함수 의존성 추가
 
   // ========== 선택 토글 함수들 ==========
 
@@ -162,11 +165,11 @@ export const MaterialStock = () => {
     setDeleteDialogOpen(true);
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (deleteTarget === 'lot') {
-      // LOT 재고 삭제 (localStorage에서도 삭제)
+      // LOT 재고 삭제 (Context를 통해 삭제)
       const lotIdsToDelete = lotStocks.filter(l => l.selected).map(l => l.id);
-      const deletedLots = deleteStockItems(lotIdsToDelete);
+      const deletedLots = await contextDeleteStockItems(lotIdsToDelete);
       setLotStocks(prev => prev.filter(l => !l.selected));
       toast.success(`${deletedLots}건의 LOT 재고가 삭제되었습니다.`);
     }
@@ -178,9 +181,9 @@ export const MaterialStock = () => {
   };
 
   // 전체 데이터 초기화
-  const handleResetAll = () => {
+  const handleResetAll = async () => {
     if (window.confirm('모든 재고 데이터를 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없습니다.')) {
-      const result = resetAllStockData();
+      const result = await contextResetAllStockData();
       setLotStocks([]);
       setSummary({ totalLots: 0, totalQuantity: 0, totalAvailable: 0, totalUsed: 0, materialCount: 0 });
       toast.success(`재고 ${result.stocks}건이 삭제되었습니다.`);
@@ -812,3 +815,5 @@ export const MaterialStock = () => {
     </div>
   );
 };
+
+export default MaterialStock;

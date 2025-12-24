@@ -44,15 +44,114 @@ import {
 import { clsx } from 'clsx'
 import { downloadExcel } from '@/lib/excelUtils'
 import { toast } from 'sonner'
-// Mock 서비스 사용 (브라우저에서 Prisma 사용 불가)
-import { getDailyProductionSummary } from '@/services/mock/productionService.mock'
-import {
-  traceBackward,
-  traceForward,
-  flattenTraceTree,
-  type TraceResult,
-  type TraceNode,
-} from '@/services/mock/lotTraceService.mock'
+import { hasBusinessAPI, getAPI } from '@/lib/electronBridge'
+
+// ===== 타입 정의 =====
+export interface TraceNode {
+  id: number
+  lotNumber: string
+  type: 'PRODUCTION_LOT' | 'MATERIAL_LOT'
+  processCode: string
+  productCode?: string
+  productName?: string
+  materialCode?: string
+  materialName?: string
+  quantity: number
+  status: string
+  date: string
+  depth: number
+  children: TraceNode[]
+}
+
+export interface TraceResult {
+  rootNode: TraceNode
+  direction: 'FORWARD' | 'BACKWARD'
+  totalNodes: number
+  maxDepth: number
+}
+
+interface DailyProductionSummaryItem {
+  processCode: string
+  status: string
+  completedQty: number
+  defectQty: number
+}
+
+// ===== 로컬 스텁/유틸 함수 =====
+
+// 생산 일별 요약 조회 (스텁 - API 미구현)
+async function getDailyProductionSummary(date: Date): Promise<DailyProductionSummaryItem[]> {
+  // TODO: Electron API 구현 필요
+  console.warn('[ReportView] getDailyProductionSummary: API not implemented', { date })
+  return []
+}
+
+// LOT 역방향 추적 (Electron API)
+async function traceBackward(lotNumber: string): Promise<TraceResult> {
+  if (!hasBusinessAPI()) {
+    return createNotFoundResult(lotNumber, 'BACKWARD')
+  }
+  try {
+    const api = getAPI()
+    const result = await api!.lotTrace.traceBackward(lotNumber)
+    if (!result.success || !result.data) {
+      return createNotFoundResult(lotNumber, 'BACKWARD')
+    }
+    return result.data as TraceResult
+  } catch (err) {
+    console.error('[ReportView] traceBackward error:', err)
+    return createNotFoundResult(lotNumber, 'BACKWARD')
+  }
+}
+
+// LOT 정방향 추적 (Electron API)
+async function traceForward(lotNumber: string): Promise<TraceResult> {
+  if (!hasBusinessAPI()) {
+    return createNotFoundResult(lotNumber, 'FORWARD')
+  }
+  try {
+    const api = getAPI()
+    const result = await api!.lotTrace.traceForward(lotNumber)
+    if (!result.success || !result.data) {
+      return createNotFoundResult(lotNumber, 'FORWARD')
+    }
+    return result.data as TraceResult
+  } catch (err) {
+    console.error('[ReportView] traceForward error:', err)
+    return createNotFoundResult(lotNumber, 'FORWARD')
+  }
+}
+
+// NOT_FOUND 결과 생성
+function createNotFoundResult(lotNumber: string, direction: 'FORWARD' | 'BACKWARD'): TraceResult {
+  return {
+    rootNode: {
+      id: 0,
+      lotNumber,
+      type: 'PRODUCTION_LOT',
+      processCode: '-',
+      quantity: 0,
+      status: 'NOT_FOUND',
+      date: '',
+      depth: 0,
+      children: [],
+    },
+    direction,
+    totalNodes: 1,
+    maxDepth: 0,
+  }
+}
+
+// 트리를 플랫 배열로 변환
+function flattenTraceTree(result: TraceResult): TraceNode[] {
+  const nodes: TraceNode[] = []
+  function traverse(node: TraceNode): void {
+    nodes.push(node)
+    node.children.forEach(traverse)
+  }
+  traverse(result.rootNode)
+  return nodes
+}
 
 interface ProductionData {
   processCode: string

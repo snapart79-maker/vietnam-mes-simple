@@ -28,7 +28,12 @@ export default defineConfig({
           vite: {
             build: {
               rollupOptions: {
-                external: ['electron'],
+                external: [
+                  'electron',
+                  '@prisma/client',
+                  '.prisma/client',
+                  /^node:/,  // Node.js built-in modules
+                ],
               },
             },
           },

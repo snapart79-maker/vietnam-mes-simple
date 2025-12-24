@@ -1,5 +1,8 @@
 import React, { createContext, useContext, useState, useMemo, useEffect, PropsWithChildren } from 'react';
 
+// Electron API 헬퍼 함수
+import { hasBusinessAPI, getAPI } from '../../lib/electronBridge';
+
 // ============================================================
 // BOM Level 결정 함수
 // 공정코드에 따라 BOM Level을 자동 산출
@@ -80,14 +83,15 @@ export interface BOMGroup {
 interface BOMContextType {
   bomItems: BOMItem[];
   bomGroups: BOMGroup[];  // 품번별로 계층 그룹핑된 데이터
-  addBOMItem: (item: Omit<BOMItem, 'id' | 'regDate' | 'level'> & { level?: number }) => void;
-  addBOMItems: (items: (Omit<BOMItem, 'id' | 'regDate' | 'level'> & { level?: number })[]) => number;
-  updateBOMItem: (item: BOMItem) => void;
-  deleteBOMItem: (id: number) => void;
-  deleteBOMByProduct: (productCode: string) => number;
-  getBOMByProduct: (productCode: string) => BOMItem[];
-  getBOMByLevel: (productCode: string, level: number) => BOMItem[];
-  resetBOM: () => number;
+  addBOMItem: (item: Omit<BOMItem, 'id' | 'regDate' | 'level'> & { level?: number }) => Promise<void>; // (하이브리드)
+  addBOMItems: (items: (Omit<BOMItem, 'id' | 'regDate' | 'level'> & { level?: number })[]) => Promise<number>; // (하이브리드)
+  updateBOMItem: (item: BOMItem) => Promise<void>; // (하이브리드)
+  deleteBOMItem: (id: number) => Promise<void>; // (하이브리드)
+  deleteBOMByProduct: (productCode: string) => Promise<number>; // (하이브리드)
+  getBOMByProduct: (productCode: string) => BOMItem[];  // 로컬 상태 조회
+  getBOMByLevel: (productCode: string, level: number) => BOMItem[];  // 로컬 상태 조회
+  resetBOM: () => Promise<number>; // (하이브리드)
+  refreshBOM: () => Promise<void>; // (하이브리드) DB에서 BOM 목록 새로고침
 }
 
 const BOMContext = createContext<BOMContextType | undefined>(undefined);
@@ -217,71 +221,181 @@ export const BOMProvider = ({ children }: PropsWithChildren) => {
     return result.sort((a, b) => a.productCode.localeCompare(b.productCode));
   }, [bomItems]);
 
-  // 단일 BOM 아이템 추가
-  const addBOMItem = (newItem: Omit<BOMItem, 'id' | 'regDate' | 'level'> & { level?: number }) => {
-    const id = Math.max(...bomItems.map(b => b.id), 0) + 1;
+  // 단일 BOM 아이템 추가 (하이브리드)
+  const addBOMItem = async (newItem: Omit<BOMItem, 'id' | 'regDate' | 'level'> & { level?: number }): Promise<void> => {
     const level = newItem.level ?? determineLevel(newItem.processCode);
 
-    const item: BOMItem = {
-      ...newItem,
-      id,
-      level,
-      regDate: new Date().toISOString().split('T')[0],
-    };
-    setBomItems([...bomItems, item]);
+    if (hasBusinessAPI()) {
+      // Electron 환경: IPC를 통해 실제 DB 서비스 호출
+      const api = getAPI();
+      // productCode에서 productId를 추출하거나 변환 필요 (실제 구현에 따라 조정)
+      const result = await api!.bom.createBOMItem({
+        productId: parseInt(newItem.productCode) || 0,  // 실제 매핑 필요
+        materialId: parseInt(newItem.materialCode) || 0, // 실제 매핑 필요
+        quantity: newItem.quantity,
+        processCode: newItem.processCode,
+        unit: newItem.unit,
+      });
+      if (!result.success) {
+        throw new Error(result.error || 'BOM 아이템 등록 실패');
+      }
+      // DB에서 생성된 데이터로 로컬 상태 업데이트
+      const dbItem = result.data as { id: number };
+      const item: BOMItem = {
+        ...newItem,
+        id: dbItem.id,
+        level,
+        regDate: new Date().toISOString().split('T')[0],
+      };
+      setBomItems(prev => [...prev, item]);
+    } else {
+      // 브라우저 환경: Mock 서비스 사용 (localStorage)
+      const id = Math.max(...bomItems.map(b => b.id), 0) + 1;
+      const item: BOMItem = {
+        ...newItem,
+        id,
+        level,
+        regDate: new Date().toISOString().split('T')[0],
+      };
+      setBomItems([...bomItems, item]);
+    }
   };
 
-  // 일괄 등록 함수 (level 자동 산출)
-  const addBOMItems = (newItems: (Omit<BOMItem, 'id' | 'regDate' | 'level'> & { level?: number })[]): number => {
+  // 일괄 등록 함수 (하이브리드)
+  const addBOMItems = async (newItems: (Omit<BOMItem, 'id' | 'regDate' | 'level'> & { level?: number })[]): Promise<number> => {
     const today = new Date().toISOString().split('T')[0];
 
-    setBomItems(prev => {
-      const startId = Math.max(...prev.map(b => b.id), 0) + 1;
-      const itemsToAdd: BOMItem[] = newItems.map((item, index) => ({
-        ...item,
-        id: startId + index,
-        level: item.level ?? determineLevel(item.processCode),
-        regDate: today,
-      }));
-      return [...prev, ...itemsToAdd];
-    });
+    if (hasBusinessAPI()) {
+      // Electron 환경: IPC를 통해 실제 DB 서비스 호출 (개별 등록)
+      const api = getAPI();
+      const addedItems: BOMItem[] = [];
 
-    return newItems.length;
+      for (const newItem of newItems) {
+        const level = newItem.level ?? determineLevel(newItem.processCode);
+        const result = await api!.bom.createBOMItem({
+          productId: parseInt(newItem.productCode) || 0,
+          materialId: parseInt(newItem.materialCode) || 0,
+          quantity: newItem.quantity,
+          processCode: newItem.processCode,
+          unit: newItem.unit,
+        });
+        if (result.success && result.data) {
+          const dbItem = result.data as { id: number };
+          addedItems.push({
+            ...newItem,
+            id: dbItem.id,
+            level,
+            regDate: today,
+          });
+        }
+      }
+
+      // 로컬 상태 일괄 업데이트
+      setBomItems(prev => [...prev, ...addedItems]);
+      return addedItems.length;
+    } else {
+      // 브라우저 환경: Mock 서비스 사용 (localStorage)
+      setBomItems(prev => {
+        const startId = Math.max(...prev.map(b => b.id), 0) + 1;
+        const itemsToAdd: BOMItem[] = newItems.map((item, index) => ({
+          ...item,
+          id: startId + index,
+          level: item.level ?? determineLevel(item.processCode),
+          regDate: today,
+        }));
+        return [...prev, ...itemsToAdd];
+      });
+
+      return newItems.length;
+    }
   };
 
-  const updateBOMItem = (updatedItem: BOMItem) => {
+  // BOM 아이템 수정 (하이브리드)
+  const updateBOMItem = async (updatedItem: BOMItem): Promise<void> => {
+    if (hasBusinessAPI()) {
+      // Electron 환경: IPC를 통해 실제 DB 서비스 호출
+      const api = getAPI();
+      const result = await api!.bom.updateBOMItem(updatedItem.id, {
+        quantity: updatedItem.quantity,
+        processCode: updatedItem.processCode,
+        unit: updatedItem.unit,
+      });
+      if (!result.success) {
+        throw new Error(result.error || 'BOM 아이템 수정 실패');
+      }
+    }
+    // 로컬 상태 업데이트 (Electron, 브라우저 공통)
     setBomItems(prev => prev.map(b => b.id === updatedItem.id ? updatedItem : b));
   };
 
-  const deleteBOMItem = (id: number) => {
+  // BOM 아이템 삭제 (하이브리드)
+  const deleteBOMItem = async (id: number): Promise<void> => {
+    if (hasBusinessAPI()) {
+      // Electron 환경: IPC를 통해 실제 DB 서비스 호출
+      const api = getAPI();
+      const result = await api!.bom.deleteBOMItem(id);
+      if (!result.success) {
+        throw new Error(result.error || 'BOM 아이템 삭제 실패');
+      }
+    }
+    // 로컬 상태 업데이트 (Electron, 브라우저 공통)
     setBomItems(prev => prev.filter(b => b.id !== id));
   };
 
-  // 특정 품번의 BOM 전체 삭제
-  const deleteBOMByProduct = (productCode: string): number => {
-    let deletedCount = 0;
-    setBomItems(prev => {
-      const toDelete = prev.filter(b => b.productCode === productCode);
-      deletedCount = toDelete.length;
-      return prev.filter(b => b.productCode !== productCode);
-    });
+  // 특정 품번의 BOM 전체 삭제 (하이브리드)
+  const deleteBOMByProduct = async (productCode: string): Promise<number> => {
+    const toDelete = bomItems.filter(b => b.productCode === productCode);
+    const deletedCount = toDelete.length;
+
+    if (hasBusinessAPI()) {
+      // Electron 환경: IPC를 통해 모든 아이템 삭제
+      const api = getAPI();
+      for (const item of toDelete) {
+        await api!.bom.deleteBOMItem(item.id);
+      }
+    }
+
+    // 로컬 상태 업데이트 (Electron, 브라우저 공통)
+    setBomItems(prev => prev.filter(b => b.productCode !== productCode));
     return deletedCount;
   };
 
-  // 특정 품번의 BOM 조회
+  // 특정 품번의 BOM 조회 (로컬 상태)
   const getBOMByProduct = (productCode: string): BOMItem[] => {
     return bomItems.filter(b => b.productCode === productCode);
   };
 
-  // 특정 품번, 특정 Level의 BOM 조회
+  // 특정 품번, 특정 Level의 BOM 조회 (로컬 상태)
   const getBOMByLevel = (productCode: string, level: number): BOMItem[] => {
     return bomItems.filter(b => b.productCode === productCode && b.level === level);
   };
 
-  const resetBOM = () => {
+  // BOM 초기화 (하이브리드)
+  const resetBOM = async (): Promise<number> => {
     const count = bomItems.length;
+
+    if (hasBusinessAPI()) {
+      // Electron 환경: IPC를 통해 모든 BOM 삭제
+      const api = getAPI();
+      for (const item of bomItems) {
+        await api!.bom.deleteBOMItem(item.id);
+      }
+    }
+
+    // 로컬 상태 초기화 (Electron, 브라우저 공통)
     setBomItems([]);
     return count;
+  };
+
+  // DB에서 BOM 목록 새로고침 (하이브리드)
+  const refreshBOM = async (): Promise<void> => {
+    if (hasBusinessAPI()) {
+      // Electron 환경: 모든 제품의 BOM 로드 (실제 구현 시 getAll 메서드 필요)
+      // 현재 BOMAPI에 getAll이 없으므로, 각 제품별로 조회 필요
+      // 일단 로컬 상태 유지
+      console.log('[BOMContext] refreshBOM called - Electron mode');
+    }
+    // 브라우저 환경: localStorage에서 이미 로드되어 있으므로 무시
   };
 
   return (
@@ -295,7 +409,8 @@ export const BOMProvider = ({ children }: PropsWithChildren) => {
       deleteBOMByProduct,
       getBOMByProduct,
       getBOMByLevel,
-      resetBOM
+      resetBOM,
+      refreshBOM,
     }}>
       {children}
     </BOMContext.Provider>

@@ -77,13 +77,27 @@ export function LabelPreviewDialog({
   const [labelType, setLabelType] = useState<'lot' | 'bundle'>(bundleData ? 'bundle' : 'lot')
 
   // 라벨 옵션
-  const [template, setTemplate] = useState<LabelTemplate>('100x150mm')
+  const [template, setTemplate] = useState<LabelTemplate>('75x45mm')
   const [showQR, setShowQR] = useState(true)
   const [showBarcode, setShowBarcode] = useState(true)
   const [copies, setCopies] = useState(1)
+  // 사용자 정의 크기
+  const [customWidth, setCustomWidth] = useState(75)
+  const [customHeight, setCustomHeight] = useState(45)
 
   // 템플릿 목록
   const templates = getTemplates()
+  const isCustomTemplate = template === 'custom'
+
+  // 라벨 옵션 생성
+  const getLabelOptions = (copiesOverride?: number): Partial<import('@/services/labelService').LabelOptions> => ({
+    template,
+    showQR,
+    showBarcode,
+    showLogo: false,
+    copies: copiesOverride ?? 1,
+    ...(isCustomTemplate && { customWidth, customHeight }),
+  })
 
   // 라벨 미리보기 생성
   const generatePreview = useCallback(async () => {
@@ -99,16 +113,10 @@ export function LabelPreviewDialog({
           bundleData.setQty,
           bundleData.totalQty,
           format(new Date(), 'yyyy-MM-dd'),
-          { template, showQR, showBarcode, showLogo: false, copies: 1 }
+          getLabelOptions(1)
         )
       } else if (lotData) {
-        pdf = await createLabel(lotData, {
-          template,
-          showQR,
-          showBarcode,
-          showLogo: false,
-          copies: 1,
-        })
+        pdf = await createLabel(lotData, getLabelOptions(1))
       } else {
         throw new Error('라벨 데이터가 없습니다.')
       }
@@ -126,7 +134,8 @@ export function LabelPreviewDialog({
     } finally {
       setIsLoading(false)
     }
-  }, [labelType, lotData, bundleData, template, showQR, showBarcode, previewUrl])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelType, lotData, bundleData, template, showQR, showBarcode, customWidth, customHeight])
 
   // 초기 미리보기 생성
   useEffect(() => {
@@ -157,16 +166,10 @@ export function LabelPreviewDialog({
           bundleData.setQty,
           bundleData.totalQty,
           format(new Date(), 'yyyy-MM-dd'),
-          { template, showQR, showBarcode, showLogo: false, copies }
+          getLabelOptions(copies)
         )
       } else if (lotData) {
-        pdf = await createLabel(lotData, {
-          template,
-          showQR,
-          showBarcode,
-          showLogo: false,
-          copies,
-        })
+        pdf = await createLabel(lotData, getLabelOptions(copies))
       } else {
         throw new Error('라벨 데이터가 없습니다.')
       }
@@ -197,17 +200,11 @@ export function LabelPreviewDialog({
           bundleData.setQty,
           bundleData.totalQty,
           format(new Date(), 'yyyy-MM-dd'),
-          { template, showQR, showBarcode, showLogo: false, copies }
+          getLabelOptions(copies)
         )
         filename = `bundle_${bundleData.bundleNo}`
       } else if (lotData) {
-        pdf = await createLabel(lotData, {
-          template,
-          showQR,
-          showBarcode,
-          showLogo: false,
-          copies,
-        })
+        pdf = await createLabel(lotData, getLabelOptions(copies))
         filename = `label_${lotData.lotNumber}`
       } else {
         throw new Error('라벨 데이터가 없습니다.')
@@ -327,6 +324,32 @@ export function LabelPreviewDialog({
                     </SelectContent>
                   </Select>
                 </div>
+
+                {/* 사용자 정의 크기 입력 */}
+                {isCustomTemplate && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">너비 (mm)</Label>
+                      <Input
+                        type="number"
+                        value={customWidth}
+                        onChange={(e) => setCustomWidth(Math.max(20, Math.min(200, Number(e.target.value))))}
+                        min={20}
+                        max={200}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">높이 (mm)</Label>
+                      <Input
+                        type="number"
+                        value={customHeight}
+                        onChange={(e) => setCustomHeight(Math.max(15, Math.min(150, Number(e.target.value))))}
+                        min={15}
+                        max={150}
+                      />
+                    </div>
+                  </div>
+                )}
 
                 {/* QR 코드 */}
                 <div className="flex items-center justify-between">

@@ -233,6 +233,49 @@ export function generateBundleBarcode(
 }
 
 /**
+ * 완료 시점 LOT 번호 생성 (V3)
+ * 형식: {공정코드}{반제품품번}Q{완료수량}-{YYMMDD}-{일련번호3자리}
+ * 예: CA00315452-001Q100-241224-001
+ *
+ * @param processCode 공정 코드 (CA, MC, SB 등)
+ * @param semiProductCode 반제품 품번 (절압착 품번, 예: 00315452-001)
+ * @param completedQty 완료 수량 (실제 양품 수량)
+ * @param sequence 일련번호 (1-999)
+ * @param date 날짜 (기본값: 오늘)
+ */
+export function generateCompletionLotNumber(
+  processCode: string,
+  semiProductCode: string,
+  completedQty: number,
+  sequence: number,
+  date: Date = new Date()
+): string {
+  const dateStr = getDateString(date)
+  const seqStr = String(sequence).padStart(3, '0')
+
+  // 형식: {공정코드}{반제품품번}Q{완료수량}-{YYMMDD}-{일련번호}
+  return `${processCode}${semiProductCode}Q${completedQty}-${dateStr}-${seqStr}`
+}
+
+/**
+ * 임시 LOT 번호 생성 (작업 등록 시 사용)
+ * 형식: TMP-{공정코드}-{timestamp}
+ * 예: TMP-CA-1735012345678
+ *
+ * @param processCode 공정 코드
+ */
+export function generateTempLotNumber(processCode: string): string {
+  return `TMP-${processCode}-${Date.now()}`
+}
+
+/**
+ * 임시 LOT 번호인지 확인
+ */
+export function isTempLotNumber(lotNumber: string): boolean {
+  return lotNumber.startsWith('TMP-')
+}
+
+/**
  * V2 바코드 파싱 (BARCORD 호환)
  *
  * BARCORD 형식: {품번}Q{수량}-{공정단축코드}{YYMMDD}-{시퀀스3자리}

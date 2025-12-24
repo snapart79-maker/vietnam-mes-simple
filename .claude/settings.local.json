@@ -26,7 +26,17 @@
       "Bash(ls:*)",
       "Bash(find:*)",
       "Bash(grep:*)",
-      "Bash(pnpm --version:*)"
+      "Bash(pnpm --version:*)",
+      "Bash(curl:*)",
+      "mcp__playwright__browser_navigate",
+      "Bash(pkill:*)",
+      "Bash(lsof:*)",
+      "Bash(netstat:*)",
+      "Bash(xargs kill:*)",
+      "Bash(npm run dev:*)",
+      "Bash(for f in Dashboard Login MaterialReceiving ProcessView InspectionView ReportView Settings)",
+      "Bash(do echo -n '$f: ' grep -E \"^export \\(default|const\\)\" /mnt/c/Project/vietnam-mes-simple/src/app/pages/$f.tsx)",
+      "Bash(xargs:*)"
     ]
   }
 }

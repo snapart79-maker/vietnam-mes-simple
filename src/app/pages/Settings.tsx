@@ -71,24 +71,130 @@ import { toast } from 'sonner'
 import { useAuth } from '../context/AuthContext'
 import { useMaterial, type WireColorMapping } from '../context/MaterialContext'
 import { useProduction } from '../context/ProductionContext'
-// Mock 서비스 사용 (브라우저에서 Prisma 사용 불가)
-import {
-  getLines as getAllLines,
-  createLine,
-  updateLine,
-  setLineActive,
-  deleteLine,
-} from '@/services/mock/lineService.mock'
-import {
-  getBusinessRules,
-  saveBusinessRules,
-  getPrinterSettings,
-  savePrinterSettings,
-  getLabelSettings,
-  saveLabelSettings,
-} from '@/services/mock/appSettingsService.mock'
-import { createBackup, downloadBackup, resetDatabase } from '@/services/mock/backupService.mock'
-import { changePassword, verifyAdminPassword } from '@/services/mock/authService.mock'
+import { hasBusinessAPI, getAPI } from '@/lib/electronBridge'
+
+// ===== 로컬 스텁 함수 (API 미구현) =====
+
+// Line API (Electron API 사용)
+async function getAllLines(): Promise<Line[]> {
+  if (!hasBusinessAPI()) return []
+  const api = getAPI()
+  const result = await api!.line.getAll()
+  return result.success ? (result.data || []) : []
+}
+
+async function createLine(input: { code: string; name: string; processCode: string }): Promise<void> {
+  // TODO: Electron API 구현 필요
+  console.warn('[Settings] createLine: API not implemented', input)
+}
+
+async function updateLine(id: number, input: { name?: string; processCode?: string; isActive?: boolean }): Promise<void> {
+  // TODO: Electron API 구현 필요
+  console.warn('[Settings] updateLine: API not implemented', { id, input })
+}
+
+async function deleteLine(id: number): Promise<void> {
+  // TODO: Electron API 구현 필요
+  console.warn('[Settings] deleteLine: API not implemented', { id })
+}
+
+// App Settings (localStorage 기반)
+const SETTINGS_KEYS = {
+  businessRules: 'vietnam_mes_business_rules',
+  printerSettings: 'vietnam_mes_printer_settings',
+  labelSettings: 'vietnam_mes_label_settings',
+}
+
+async function getBusinessRules(): Promise<BusinessRules> {
+  try {
+    const stored = localStorage.getItem(SETTINGS_KEYS.businessRules)
+    if (stored) return JSON.parse(stored)
+  } catch (e) { console.error('getBusinessRules error:', e) }
+  return {
+    allowNegativeStock: false,
+    enableSafetyStockWarning: true,
+    bomStrictMode: true,
+    enforceFifo: false,
+  }
+}
+
+async function saveBusinessRules(rules: BusinessRules): Promise<void> {
+  localStorage.setItem(SETTINGS_KEYS.businessRules, JSON.stringify(rules))
+}
+
+async function getPrinterSettings(): Promise<PrinterSettings> {
+  try {
+    const stored = localStorage.getItem(SETTINGS_KEYS.printerSettings)
+    if (stored) return JSON.parse(stored)
+  } catch (e) { console.error('getPrinterSettings error:', e) }
+  return { labelPrinter: '', reportPrinter: '' }
+}
+
+async function savePrinterSettings(settings: PrinterSettings): Promise<void> {
+  localStorage.setItem(SETTINGS_KEYS.printerSettings, JSON.stringify(settings))
+}
+
+async function getLabelSettings(): Promise<LabelSettings> {
+  try {
+    const stored = localStorage.getItem(SETTINGS_KEYS.labelSettings)
+    if (stored) return JSON.parse(stored)
+  } catch (e) { console.error('getLabelSettings error:', e) }
+  return { autoPrint: true, copies: 1, xOffset: 0, yOffset: 0 }
+}
+
+async function saveLabelSettings(settings: LabelSettings): Promise<void> {
+  localStorage.setItem(SETTINGS_KEYS.labelSettings, JSON.stringify(settings))
+}
+
+// Backup (로컬 스텁)
+interface BackupData {
+  timestamp: string
+  version: string
+  data: Record<string, unknown>
+}
+
+async function createBackup(options: { includeSystemTables: boolean }): Promise<BackupData> {
+  const backup: BackupData = {
+    timestamp: new Date().toISOString(),
+    version: '1.0.0',
+    data: {
+      businessRules: await getBusinessRules(),
+      printerSettings: await getPrinterSettings(),
+      labelSettings: await getLabelSettings(),
+    },
+  }
+  console.log('[Settings] createBackup:', options, backup)
+  return backup
+}
+
+function downloadBackup(backup: BackupData): void {
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `vietnam_mes_backup_${new Date().toISOString().split('T')[0]}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function resetDatabase(): Promise<{ success: boolean; message?: string; deletedCounts?: Record<string, number> }> {
+  // TODO: Electron API 구현 필요
+  console.warn('[Settings] resetDatabase: API not implemented')
+  return { success: false, message: 'API not implemented' }
+}
+
+// Auth (로컬 스텁)
+async function changePassword(userId: string, currentPassword: string, newPassword: string): Promise<{ success: boolean; error?: string }> {
+  // TODO: Electron API 구현 필요
+  console.warn('[Settings] changePassword: API not implemented', { userId })
+  return { success: false, error: 'API not implemented' }
+}
+
+async function verifyAdminPassword(password: string): Promise<boolean> {
+  // TODO: Electron API 구현 필요
+  console.warn('[Settings] verifyAdminPassword: API not implemented')
+  return password === 'admin' // 임시 검증
+}
 
 interface Line {
   id: number

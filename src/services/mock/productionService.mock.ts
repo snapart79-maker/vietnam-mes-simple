@@ -16,7 +16,13 @@ import {
   type ValidationResult,
   type InputType,
 } from '../../lib/processValidation'
-import { parseBarcode } from '../barcodeService'
+import {
+  parseBarcode,
+  generateTempLotNumber,
+  generateCompletionLotNumber,
+  isTempLotNumber,
+} from '../barcodeService'
+import { getNextSequence } from './sequenceService.mock'
 
 // ============================================
 // LocalStorage Keys & Persistence
@@ -385,9 +391,12 @@ export async function createLot(input: {
     }
   }
 
+  // 작업 등록 시에는 임시 LOT 번호 생성 (완료 시 최종 LOT 번호 부여)
+  const tempLotNumber = generateTempLotNumber(input.processCode)
+
   const newLot: LotWithRelations = {
     id: newId,
-    lotNumber: `${input.processCode}${input.productCode || 'TEMP'}Q${input.plannedQty || 0}-${input.processCode[0]}${dateStr}-${seqStr}`,
+    lotNumber: tempLotNumber,
     processCode: input.processCode.toUpperCase(),
     lineCode: input.lineCode || null,
     status: 'IN_PROGRESS',
@@ -411,16 +420,40 @@ export async function createLot(input: {
 
 /**
  * 생산 작업 완료 (Mock)
+ *
+ * 완료 시점에 최종 LOT 번호를 생성합니다.
+ * 형식: {공정코드}{반제품품번}Q{완료수량}-{YYMMDD}-{일련번호}
+ * 예: CA00315452-001Q100-241224-001
  */
 export async function completeProduction(input: {
   lotId: number
   completedQty: number
   defectQty?: number
+  semiProductCode?: string  // 반제품 품번 (CA 공정의 경우 절압착품번)
 }): Promise<LotWithRelations> {
   await new Promise((r) => setTimeout(r, 300))
 
   const lot = MOCK_LOTS.find((l) => l.id === input.lotId)
   if (!lot) throw new Error('LOT not found')
+
+  // 임시 LOT 번호인 경우에만 최종 LOT 번호 생성
+  if (isTempLotNumber(lot.lotNumber)) {
+    // 반제품 품번: 입력값 > crimpCode > productCode > 'UNKNOWN'
+    const semiProductCode = input.semiProductCode || lot.crimpCode || lot.product?.code || 'UNKNOWN'
+
+    // 완료 시점에 일련번호 생성 (공정코드 기반)
+    const seqResult = await getNextSequence(`COMPLETION_${lot.processCode}`, new Date(), 3)
+
+    // 최종 LOT 번호 생성
+    const finalLotNumber = generateCompletionLotNumber(
+      lot.processCode,
+      semiProductCode,
+      input.completedQty,
+      seqResult.sequence
+    )
+
+    lot.lotNumber = finalLotNumber
+  }
 
   lot.status = 'COMPLETED'
   lot.completedQty = input.completedQty
