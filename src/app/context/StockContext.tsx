@@ -17,6 +17,9 @@ import * as MockStockService from '../../services/mock/stockService.mock'
 // Types (로컬 정의 - Mock 서비스 의존성 제거)
 // ============================================
 
+// Phase 5: 재고 위치 타입 (StockItem보다 먼저 정의)
+export type StockLocation = 'warehouse' | 'production' | 'process'
+
 export interface StockItem {
   id: number
   materialId: number
@@ -26,8 +29,8 @@ export interface StockItem {
   quantity: number
   usedQty: number
   availableQty: number
-  unit: string
-  location?: string
+  unit?: string  // 선택적 (stockService.mock과 호환)
+  location?: StockLocation  // Phase 5: 재고 위치
   processCode?: string
   expiryDate?: string
   receivedAt: string
@@ -121,6 +124,59 @@ export interface MaterialInput {
 }
 
 // ============================================
+// Phase 5: 3단계 재고 관리 Types
+// ============================================
+
+export interface IssueToProductionInput {
+  materialId: number
+  materialCode: string
+  materialName?: string
+  lotNumber: string
+  quantity: number
+}
+
+export interface IssueToProductionResult {
+  success: boolean
+  warehouseStock?: StockItem
+  productionStock?: StockItem
+  issuedQty: number
+  error?: string
+}
+
+export interface IssuingRecord {
+  id: number
+  materialCode: string
+  materialName: string
+  lotNumber: string
+  quantity: number
+  availableQty: number
+  issuedAt: string
+}
+
+export interface ScanToProcessInput {
+  processCode: string
+  materialId: number
+  materialCode: string
+  materialName?: string
+  lotNumber: string
+  quantity: number
+}
+
+export interface ScanToProcessResult {
+  success: boolean
+  productionStock?: StockItem
+  processStock?: StockItem
+  scannedQty: number
+  error?: string
+}
+
+export interface CancelIssueResult {
+  success: boolean
+  cancelledQty: number
+  error?: string
+}
+
+// ============================================
 // Types
 // ============================================
 
@@ -205,6 +261,28 @@ interface StockContextValue extends StockState {
   getProcessAvailableQty: (processCode: string, materialId: number) => Promise<number>
   // 공정별 금일 스캔 내역
   getTodayProcessReceivings: (processCode?: string) => Promise<ProcessReceivingRecord[]>
+
+  // ============================================
+  // Phase 5: 3단계 재고 관리 함수
+  // ============================================
+
+  // 자재 불출 (자재창고 → 생산창고)
+  issueToProduction: (input: IssueToProductionInput) => Promise<IssueToProductionResult>
+  // 공정 자재 스캔 (생산창고 → 공정재고)
+  scanToProcess: (input: ScanToProcessInput) => Promise<ScanToProcessResult>
+  // 금일 불출 내역 조회
+  getTodayIssuings: () => Promise<IssuingRecord[]>
+  // 위치별 재고 조회
+  getStocksByLocation: (
+    location: StockLocation,
+    options?: { processCode?: string; materialCode?: string; showZero?: boolean }
+  ) => Promise<StockItem[]>
+  // 위치별 재고 요약
+  getLocationStockSummary: (location: StockLocation) => Promise<StockSummary>
+  // 불출 취소
+  cancelIssue: (stockId: number) => Promise<CancelIssueResult>
+  // 생산창고 재고 상세 조회
+  getProductionStockById: (stockId: number) => Promise<StockItem | null>
 
   // ============================================
   // 데이터 관리 함수
@@ -760,6 +838,164 @@ export function StockProvider({ children }: StockProviderProps) {
   }, [])
 
   // ============================================
+  // Phase 5: 3단계 재고 관리 함수 구현
+  // ============================================
+
+  // 자재 불출 (자재창고 → 생산창고)
+  const issueToProduction = useCallback(async (
+    input: IssueToProductionInput
+  ): Promise<IssueToProductionResult> => {
+    // 브라우저 모드: Mock 서비스 사용
+    if (!hasBusinessAPI()) {
+      console.log('[StockContext] Browser mode: Using mock issueToProduction')
+      setLoading(true)
+      try {
+        const result = await MockStockService.issueToProduction(input)
+        setLoading(false)
+        return result
+      } catch (err) {
+        setLoading(false)
+        const message = err instanceof Error ? err.message : '자재 불출 실패'
+        return { success: false, issuedQty: 0, error: message }
+      }
+    }
+
+    // Electron 모드: API 호출 (미구현 시 Mock 사용)
+    console.warn('[StockContext] issueToProduction: Electron API not implemented, using mock')
+    setLoading(true)
+    try {
+      const result = await MockStockService.issueToProduction(input)
+      setLoading(false)
+      return result
+    } catch (err) {
+      setLoading(false)
+      const message = err instanceof Error ? err.message : '자재 불출 실패'
+      return { success: false, issuedQty: 0, error: message }
+    }
+  }, [setLoading])
+
+  // 공정 자재 스캔 (생산창고 → 공정재고)
+  const scanToProcess = useCallback(async (
+    input: ScanToProcessInput
+  ): Promise<ScanToProcessResult> => {
+    // 브라우저 모드: Mock 서비스 사용
+    if (!hasBusinessAPI()) {
+      console.log('[StockContext] Browser mode: Using mock scanToProcess')
+      setLoading(true)
+      try {
+        const result = await MockStockService.scanToProcess(input)
+        setLoading(false)
+        return result
+      } catch (err) {
+        setLoading(false)
+        const message = err instanceof Error ? err.message : '공정 스캔 실패'
+        return { success: false, scannedQty: 0, error: message }
+      }
+    }
+
+    // Electron 모드: API 호출 (미구현 시 Mock 사용)
+    console.warn('[StockContext] scanToProcess: Electron API not implemented, using mock')
+    setLoading(true)
+    try {
+      const result = await MockStockService.scanToProcess(input)
+      setLoading(false)
+      return result
+    } catch (err) {
+      setLoading(false)
+      const message = err instanceof Error ? err.message : '공정 스캔 실패'
+      return { success: false, scannedQty: 0, error: message }
+    }
+  }, [setLoading])
+
+  // 금일 불출 내역 조회
+  const getTodayIssuings = useCallback(async (): Promise<IssuingRecord[]> => {
+    // 브라우저 모드: Mock 서비스 사용
+    if (!hasBusinessAPI()) {
+      console.log('[StockContext] Browser mode: Using mock getTodayIssuings')
+      return MockStockService.getTodayIssuings()
+    }
+
+    // Electron 모드: API 호출 (미구현 시 Mock 사용)
+    return MockStockService.getTodayIssuings()
+  }, [])
+
+  // 위치별 재고 조회
+  const getStocksByLocation = useCallback(async (
+    location: StockLocation,
+    options?: { processCode?: string; materialCode?: string; showZero?: boolean }
+  ): Promise<StockItem[]> => {
+    // 브라우저 모드: Mock 서비스 사용
+    if (!hasBusinessAPI()) {
+      console.log('[StockContext] Browser mode: Using mock getStocksByLocation')
+      const result = await MockStockService.getStocksByLocation(location, options)
+      return result as StockItem[]
+    }
+
+    // Electron 모드: API 호출 (미구현 시 Mock 사용)
+    const result = await MockStockService.getStocksByLocation(location, options)
+    return result as StockItem[]
+  }, [])
+
+  // 위치별 재고 요약
+  const getLocationStockSummary = useCallback(async (
+    location: StockLocation
+  ): Promise<StockSummary> => {
+    // 브라우저 모드: Mock 서비스 사용
+    if (!hasBusinessAPI()) {
+      console.log('[StockContext] Browser mode: Using mock getLocationStockSummary')
+      return MockStockService.getLocationStockSummary(location)
+    }
+
+    // Electron 모드: API 호출 (미구현 시 Mock 사용)
+    return MockStockService.getLocationStockSummary(location)
+  }, [])
+
+  // 불출 취소
+  const cancelIssue = useCallback(async (stockId: number): Promise<CancelIssueResult> => {
+    // 브라우저 모드: Mock 서비스 사용
+    if (!hasBusinessAPI()) {
+      console.log('[StockContext] Browser mode: Using mock cancelIssue')
+      setLoading(true)
+      try {
+        const result = await MockStockService.cancelIssue(stockId)
+        setLoading(false)
+        return result
+      } catch (err) {
+        setLoading(false)
+        const message = err instanceof Error ? err.message : '불출 취소 실패'
+        return { success: false, cancelledQty: 0, error: message }
+      }
+    }
+
+    // Electron 모드: API 호출 (미구현 시 Mock 사용)
+    console.warn('[StockContext] cancelIssue: Electron API not implemented, using mock')
+    setLoading(true)
+    try {
+      const result = await MockStockService.cancelIssue(stockId)
+      setLoading(false)
+      return result
+    } catch (err) {
+      setLoading(false)
+      const message = err instanceof Error ? err.message : '불출 취소 실패'
+      return { success: false, cancelledQty: 0, error: message }
+    }
+  }, [setLoading])
+
+  // 생산창고 재고 상세 조회
+  const getProductionStockById = useCallback(async (stockId: number): Promise<StockItem | null> => {
+    // 브라우저 모드: Mock 서비스 사용
+    if (!hasBusinessAPI()) {
+      console.log('[StockContext] Browser mode: Using mock getProductionStockById')
+      const result = await MockStockService.getProductionStockById(stockId)
+      return result as StockItem | null
+    }
+
+    // Electron 모드: API 호출 (미구현 시 Mock 사용)
+    const result = await MockStockService.getProductionStockById(stockId)
+    return result as StockItem | null
+  }, [])
+
+  // ============================================
   // 데이터 관리 함수
   // ============================================
 
@@ -922,6 +1158,14 @@ export function StockProvider({ children }: StockProviderProps) {
     getProcessStockSummary,
     getProcessAvailableQty,
     getTodayProcessReceivings,
+    // Phase 5: 3단계 재고 관리 함수
+    issueToProduction,
+    scanToProcess,
+    getTodayIssuings,
+    getStocksByLocation,
+    getLocationStockSummary,
+    cancelIssue,
+    getProductionStockById,
     // 데이터 관리 함수
     deleteStockItems,
     deleteProcessReceivings,

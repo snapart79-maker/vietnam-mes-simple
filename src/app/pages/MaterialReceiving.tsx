@@ -1,10 +1,10 @@
 /**
- * Process Material Scan Page (공정 자재 스캔)
+ * Material Issue Page (자재 불출)
  *
- * 공정별 자재 스캔 등록 (Phase D)
- * - 공정 선택 필수 (스캔 전 공정 선택)
- * - 바코드 스캔 시 공정 재고로 자동 등록 (registerProcessStock)
- * - 소진된 LOT 재스캔 방지 (checkProcessStockStatus)
+ * Phase 5: 3단계 재고 관리
+ * - 자재 창고 → 생산 창고 불출
+ * - 바코드 스캔 시 생산창고로 자동 등록 (issueToProduction)
+ * - 소진된 LOT 재스캔 방지
  * - 남은 수량 있는 LOT 재스캔 허용
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react'
@@ -19,14 +19,6 @@ import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Checkbox } from '../components/ui/checkbox'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../components/ui/select'
-import { Label } from '../components/ui/label'
 import { useDropzone } from 'react-dropzone'
 import {
   Upload,
@@ -36,17 +28,18 @@ import {
   Loader2,
   AlertCircle,
   Trash2,
+  PackageOpen,
+  FileText,
+  XCircle,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { downloadImportTemplate } from '@/services/excelImportService'
-import { parseHQBarcode, type ParsedHQBarcode } from '@/services/barcodeService'
+import { parseHQBarcode } from '@/services/barcodeService'
 // StockContext 훅 사용 (Electron API 연결)
-import { useStock, type ProcessStockInput, type ProcessReceivingRecord } from '@/app/context/StockContext'
-import { ExcelImportDialog } from '../components/dialogs/ExcelImportDialog'
+import { useStock, type IssueToProductionInput, type IssuingRecord } from '@/app/context/StockContext'
+import { ExcelImportDialog, DocumentPreviewDialog, type DocumentData, type InputMaterialInfo } from '../components/dialogs'
 // MaterialContext에서 HQ 코드로 자재 조회
 import { useMaterial } from '@/app/context/MaterialContext'
-// 공정 목록
-import { PROCESS_SEED_DATA } from '@/services/processService'
 
 interface ScannedItem {
   id: number
@@ -61,7 +54,6 @@ interface ScannedItem {
   status: 'success' | 'error' | 'pending'
   error?: string
   selected: boolean
-  processCode: string  // Phase D: 공정 코드 필수
 }
 
 // 확정된 항목 (스캔 후 즉시 등록되므로 ScannedItem과 동일)
@@ -70,35 +62,34 @@ type ConfirmedItem = ScannedItem
 export const MaterialReceiving = () => {
   const [barcode, setBarcode] = useState('')
   const [pendingItems, setPendingItems] = useState<ScannedItem[]>([])  // 스캔된 대기 항목
-  const [confirmedItems, setConfirmedItems] = useState<ScannedItem[]>([])  // 확정된 항목
+  const [confirmedItems, setConfirmedItems] = useState<ConfirmedItem[]>([])  // 확정된 항목
   const [isProcessing, setIsProcessing] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [droppedFile, setDroppedFile] = useState<File | null>(null)
-  const [selectedProcess, setSelectedProcess] = useState<string>('')
   const inputRef = useRef<HTMLInputElement>(null)
   const scanTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const lastInputTimeRef = useRef<number>(0)
 
   // MaterialContext에서 자재 조회 함수 가져오기
-  const { getMaterialByHQCode, getMaterialByCode } = useMaterial()
+  const { getMaterialByHQCode } = useMaterial()
 
   // StockContext에서 재고 함수 가져오기
   const {
-    registerProcessStock,
-    checkProcessStockStatus,
-    getTodayProcessReceivings,
+    issueToProduction,
+    getTodayIssuings,
     deleteStockItems,
+    cancelIssue,
   } = useStock()
 
-  // 자재 투입 공정만 필터링 (hasMaterialInput: true)
-  const materialInputProcesses = PROCESS_SEED_DATA.filter(p => p.hasMaterialInput)
+  // 전표 다이얼로그 상태
+  const [documentDialogOpen, setDocumentDialogOpen] = useState(false)
+  const [selectedItemForDocument, setSelectedItemForDocument] = useState<ConfirmedItem | null>(null)
 
-  // 금일 스캔 내역 로드 (공정별)
-  const loadTodayReceivings = useCallback(async () => {
+  // 금일 불출 내역 로드
+  const loadTodayIssuings = useCallback(async () => {
     try {
-      // 선택된 공정이 있으면 해당 공정만, 없으면 전체 조회
-      const receivings = await getTodayProcessReceivings(selectedProcess || undefined)
-      const items: ScannedItem[] = receivings.map((r) => ({
+      const issuings = await getTodayIssuings()
+      const items: ConfirmedItem[] = issuings.map((r: IssuingRecord) => ({
         id: r.id,
         barcode: r.lotNumber,
         materialId: 0,
@@ -107,20 +98,19 @@ export const MaterialReceiving = () => {
         lotNumber: r.lotNumber,
         quantity: r.quantity,
         unit: 'EA',
-        time: new Date(r.receivedAt).toLocaleTimeString(),
+        time: new Date(r.issuedAt).toLocaleTimeString(),
         status: 'success' as const,
         selected: false,
-        processCode: r.processCode,
       }))
       setConfirmedItems(items)
     } catch (error) {
-      console.error('Failed to load today receivings:', error)
+      console.error('Failed to load today issuings:', error)
     }
-  }, [selectedProcess])
+  }, [getTodayIssuings])
 
   useEffect(() => {
-    loadTodayReceivings()
-  }, [loadTodayReceivings])
+    loadTodayIssuings()
+  }, [loadTodayIssuings])
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
@@ -155,7 +145,6 @@ export const MaterialReceiving = () => {
     // 입력이 있으면 자동 스캔 타이머 설정 (300ms 후 자동 처리)
     if (value.trim()) {
       const now = Date.now()
-      const timeSinceLastInput = now - lastInputTimeRef.current
       lastInputTimeRef.current = now
 
       // 바코드 스캐너는 빠르게 입력됨 (50ms 이내)
@@ -168,17 +157,9 @@ export const MaterialReceiving = () => {
     }
   }
 
-  // 바코드 처리 로직 (공정 재고로 즉시 등록)
+  // 바코드 처리 로직 (생산창고로 불출)
   const processBarcode = async (barcodeValue: string) => {
     if (!barcodeValue || isProcessing) return
-
-    // Phase D: 공정 선택 필수
-    if (!selectedProcess) {
-      toast.error('먼저 공정을 선택하세요.')
-      setBarcode('')
-      inputRef.current?.focus()
-      return
-    }
 
     setIsProcessing(true)
 
@@ -201,7 +182,6 @@ export const MaterialReceiving = () => {
           status: 'error',
           error: '바코드 형식 오류',
           selected: false,
-          processCode: selectedProcess,
         }
         setPendingItems((prev) => [errorItem, ...prev])
         toast.error('올바른 바코드 형식이 아닙니다.')
@@ -230,49 +210,19 @@ export const MaterialReceiving = () => {
           unit: 'EA',
           time: new Date().toLocaleTimeString(),
           status: 'error',
-          error: `본사코드 ${hqCode} 미등록`,
+          error: `코드 ${hqCode} 미등록`,
           selected: false,
-          processCode: selectedProcess,
         }
         setPendingItems((prev) => [errorItem, ...prev])
-        toast.error(`본사 코드 ${hqCode}에 해당하는 자재가 등록되어 있지 않습니다.`)
+        toast.error(`코드 ${hqCode}에 해당하는 자재가 등록되어 있지 않습니다.`)
         setBarcode('')
         setIsProcessing(false)
         inputRef.current?.focus()
         return
       }
 
-      // 3. 공정+LOT 상태 확인 (소진 여부)
-      const status = await checkProcessStockStatus(selectedProcess, lotNumber)
-
-      if (status.isExhausted) {
-        // 소진된 LOT - 등록 불가
-        const errorItem: ScannedItem = {
-          id: Date.now(),
-          barcode: barcodeValue,
-          materialId: material.id,
-          materialCode: material.code,
-          materialName: material.name,
-          lotNumber: lotNumber,
-          quantity: qty,
-          unit: material.unit,
-          time: new Date().toLocaleTimeString(),
-          status: 'error',
-          error: '이미 사용 완료된 바코드',
-          selected: false,
-          processCode: selectedProcess,
-        }
-        setPendingItems((prev) => [errorItem, ...prev])
-        toast.error(`LOT ${lotNumber}은(는) 이미 사용이 완료되었습니다.`)
-        setBarcode('')
-        setIsProcessing(false)
-        inputRef.current?.focus()
-        return
-      }
-
-      // 4. 공정 재고로 즉시 등록
-      const stockInput: ProcessStockInput = {
-        processCode: selectedProcess,
+      // 3. 생산창고로 불출
+      const issueInput: IssueToProductionInput = {
         materialId: material.id,
         materialCode: material.code,
         materialName: material.name,
@@ -280,29 +230,25 @@ export const MaterialReceiving = () => {
         quantity: qty,
       }
 
-      const result = await registerProcessStock(stockInput)
+      const result = await issueToProduction(issueInput)
 
       if (result.success) {
         // 등록 성공 - 확정 목록에 추가
-        const successItem: ScannedItem = {
-          id: result.id,
+        const successItem: ConfirmedItem = {
+          id: result.productionStock?.id || Date.now(),
           barcode: barcodeValue,
           materialId: material.id,
           materialCode: material.code,
           materialName: material.name,
           lotNumber: lotNumber,
-          quantity: qty,
+          quantity: result.issuedQty,
           unit: material.unit,
           time: new Date().toLocaleTimeString(),
           status: 'success',
           selected: false,
-          processCode: selectedProcess,
         }
         setConfirmedItems((prev) => [successItem, ...prev])
-
-        const processName = materialInputProcesses.find(p => p.code === selectedProcess)?.name || selectedProcess
-        const actionMsg = result.isNewEntry ? '등록' : '추가'
-        toast.success(`[${processName}] ${material.name} ${qty}${material.unit} ${actionMsg} 완료`)
+        toast.success(`${material.name} ${result.issuedQty}${material.unit} 불출 완료`)
       } else {
         // 등록 실패
         const errorItem: ScannedItem = {
@@ -316,12 +262,11 @@ export const MaterialReceiving = () => {
           unit: material.unit,
           time: new Date().toLocaleTimeString(),
           status: 'error',
-          error: result.error || '등록 실패',
+          error: result.error || '불출 실패',
           selected: false,
-          processCode: selectedProcess,
         }
         setPendingItems((prev) => [errorItem, ...prev])
-        toast.error(result.error || '등록에 실패했습니다.')
+        toast.error(result.error || '불출에 실패했습니다.')
       }
     } catch (error) {
       console.error('Scan error:', error)
@@ -374,7 +319,7 @@ export const MaterialReceiving = () => {
     )
   }
 
-  // 확정 목록 선택 삭제 (공정 재고 삭제)
+  // 확정 목록 선택 삭제 (생산창고 재고 삭제)
   const handleDeleteConfirmed = async () => {
     const selectedItems = confirmedItems.filter((i) => i.selected)
     const selectedCount = selectedItems.length
@@ -405,13 +350,62 @@ export const MaterialReceiving = () => {
     }
   }
 
+  // 개별 취소 핸들러
+  const handleCancelItem = async (item: ConfirmedItem) => {
+    try {
+      const result = await cancelIssue(item.id)
+      if (result.success) {
+        setConfirmedItems((prev) => prev.filter((i) => i.id !== item.id))
+        toast.success(`${item.materialName} 불출이 취소되었습니다.`)
+      } else {
+        toast.error(result.error || '취소에 실패했습니다.')
+      }
+    } catch (error) {
+      console.error('Cancel failed:', error)
+      toast.error('취소 중 오류가 발생했습니다.')
+    }
+  }
+
+  // 전표 출력 핸들러
+  const handleOpenDocument = (item: ConfirmedItem) => {
+    setSelectedItemForDocument(item)
+    setDocumentDialogOpen(true)
+  }
+
+  // 전표 데이터 생성
+  const getDocumentData = (): DocumentData | null => {
+    if (!selectedItemForDocument) return null
+
+    return {
+      lotNumber: selectedItemForDocument.lotNumber,
+      productCode: selectedItemForDocument.materialCode,
+      productName: selectedItemForDocument.materialName,
+      quantity: selectedItemForDocument.quantity,
+      unit: selectedItemForDocument.unit,
+      productionDate: new Date(),
+      processCode: 'MO',  // Material Out (자재 불출)
+      processName: '자재 불출',
+      inputMaterials: [{
+        lotNumber: selectedItemForDocument.lotNumber,
+        productCode: selectedItemForDocument.materialCode,
+        name: selectedItemForDocument.materialName,
+        quantity: selectedItemForDocument.quantity,
+        unit: selectedItemForDocument.unit,
+        sourceType: 'material',
+      }],
+    }
+  }
+
   const pendingErrorCount = pendingItems.filter((i) => i.status === 'error').length
   const confirmedSelectedCount = confirmedItems.filter((i) => i.selected).length
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold text-slate-800">공정 자재 스캔</h2>
+        <div className="flex items-center gap-3">
+          <PackageOpen className="h-7 w-7 text-blue-600" />
+          <h2 className="text-2xl font-bold text-slate-800">자재 불출</h2>
+        </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={handleDownloadTemplate}>
             <FileSpreadsheet className="mr-2 h-4 w-4" />
@@ -420,9 +414,23 @@ export const MaterialReceiving = () => {
         </div>
       </div>
 
+      {/* 안내 배너 */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <div className="flex items-start gap-3">
+          <PackageOpen className="h-5 w-5 text-blue-600 mt-0.5" />
+          <div>
+            <p className="font-medium text-blue-800">자재 불출 안내</p>
+            <p className="text-sm text-blue-600 mt-1">
+              바코드를 스캔하면 자재가 <strong>생산 창고</strong>로 불출됩니다.
+              불출된 자재는 각 공정에서 스캔하여 사용할 수 있습니다.
+            </p>
+          </div>
+        </div>
+      </div>
+
       <Tabs defaultValue="scan" className="w-full">
         <TabsList className="grid w-full grid-cols-2 lg:w-[400px]">
-          <TabsTrigger value="scan">바코드 스캔 등록</TabsTrigger>
+          <TabsTrigger value="scan">바코드 스캔 불출</TabsTrigger>
           <TabsTrigger value="manual">엑셀 일괄 업로드</TabsTrigger>
         </TabsList>
 
@@ -430,62 +438,33 @@ export const MaterialReceiving = () => {
           {/* 바코드 스캔 입력 */}
           <Card>
             <CardHeader>
-              <CardTitle>자재 스캔 등록</CardTitle>
+              <CardTitle>바코드 스캔</CardTitle>
               <CardDescription>
-                공정을 선택하고 바코드를 스캔하면 해당 공정 재고로 즉시 등록됩니다.
+                바코드를 스캔하면 생산 창고로 자동 불출됩니다.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* 공정 선택 (스캔 전 필수) */}
-              <div className="flex flex-col sm:flex-row gap-4 items-end pb-3 border-b">
-                <div className="flex-1 space-y-1.5">
-                  <Label htmlFor="process" className="flex items-center gap-1">
-                    <span className="text-red-500">*</span> 스캔 공정 선택
-                  </Label>
-                  <Select value={selectedProcess} onValueChange={setSelectedProcess}>
-                    <SelectTrigger
-                      id="process"
-                      className={`w-full ${!selectedProcess ? 'border-red-300 bg-red-50' : ''}`}
-                    >
-                      <SelectValue placeholder="공정을 먼저 선택하세요..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {materialInputProcesses.map((process) => (
-                        <SelectItem key={process.code} value={process.code}>
-                          {process.code} - {process.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                {selectedProcess && (
-                  <div className="px-3 py-2 bg-blue-50 rounded-md text-sm text-blue-700">
-                    현재 공정: <strong>{selectedProcess}</strong> ({materialInputProcesses.find(p => p.code === selectedProcess)?.name})
-                  </div>
-                )}
-              </div>
-
               {/* 바코드 입력 */}
               <form onSubmit={handleScan} className="flex gap-4">
                 <div className="relative flex-1">
                   <ScanBarcode className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
                   <Input
                     ref={inputRef}
-                    placeholder={selectedProcess ? '바코드를 스캔하세요... (자동 등록됨)' : '먼저 공정을 선택하세요'}
-                    className={`pl-9 ${!selectedProcess ? 'bg-slate-100' : ''}`}
+                    placeholder="바코드를 스캔하세요... (자동 불출됨)"
+                    className="pl-9"
                     value={barcode}
                     onChange={handleBarcodeChange}
                     autoFocus
-                    disabled={isProcessing || !selectedProcess}
+                    disabled={isProcessing}
                   />
                 </div>
-                <Button type="submit" variant="secondary" disabled={isProcessing || !barcode.trim() || !selectedProcess}>
+                <Button type="submit" variant="secondary" disabled={isProcessing || !barcode.trim()}>
                   {isProcessing ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
                     <ScanBarcode className="mr-2 h-4 w-4" />
                   )}
-                  스캔 등록
+                  불출
                 </Button>
               </form>
             </CardContent>
@@ -515,7 +494,6 @@ export const MaterialReceiving = () => {
                     <thead className="bg-red-50 text-slate-500 font-medium border-b">
                       <tr>
                         <th className="px-4 py-3">시간</th>
-                        <th className="px-4 py-3">공정</th>
                         <th className="px-4 py-3">자재품번</th>
                         <th className="px-4 py-3">품명</th>
                         <th className="px-4 py-3">LOT번호</th>
@@ -527,11 +505,6 @@ export const MaterialReceiving = () => {
                       {pendingItems.filter(i => i.status === 'error').map((item) => (
                         <tr key={item.id} className="bg-red-50">
                           <td className="px-4 py-3">{item.time}</td>
-                          <td className="px-4 py-3">
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-200 text-slate-700">
-                              {item.processCode}
-                            </span>
-                          </td>
                           <td className="px-4 py-3 font-mono">
                             {item.materialCode}
                           </td>
@@ -560,12 +533,12 @@ export const MaterialReceiving = () => {
             </Card>
           )}
 
-          {/* 금일 스캔 내역 */}
+          {/* 금일 불출 내역 */}
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle>
-                  금일 스캔 내역 ({confirmedItems.length})
+                  금일 불출 내역 ({confirmedItems.length})
                 </CardTitle>
                 <div className="flex gap-2 items-center">
                   {confirmedSelectedCount > 0 && (
@@ -579,7 +552,7 @@ export const MaterialReceiving = () => {
                     </Button>
                   )}
                   <span className="text-sm text-green-600">
-                    등록: {confirmedItems.length}건
+                    불출: {confirmedItems.length}건
                   </span>
                 </div>
               </div>
@@ -600,12 +573,12 @@ export const MaterialReceiving = () => {
                         />
                       </th>
                       <th className="px-4 py-3">시간</th>
-                      <th className="px-4 py-3">공정</th>
                       <th className="px-4 py-3">자재품번</th>
                       <th className="px-4 py-3">품명</th>
                       <th className="px-4 py-3">LOT번호</th>
                       <th className="px-4 py-3 text-right">수량</th>
                       <th className="px-4 py-3 text-center">상태</th>
+                      <th className="px-4 py-3 text-center">액션</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -615,7 +588,7 @@ export const MaterialReceiving = () => {
                           colSpan={8}
                           className="px-4 py-8 text-center text-slate-400"
                         >
-                          스캔된 내역이 없습니다. 공정을 선택하고 바코드를 스캔하세요.
+                          불출된 내역이 없습니다. 바코드를 스캔하세요.
                         </td>
                       </tr>
                     ) : (
@@ -631,11 +604,6 @@ export const MaterialReceiving = () => {
                             />
                           </td>
                           <td className="px-4 py-3">{item.time}</td>
-                          <td className="px-4 py-3">
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
-                              {item.processCode}
-                            </span>
-                          </td>
                           <td className="px-4 py-3 font-mono">
                             {item.materialCode}
                           </td>
@@ -650,6 +618,28 @@ export const MaterialReceiving = () => {
                             <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-50 text-green-700">
                               <Check className="w-3 h-3 mr-1" /> 완료
                             </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center justify-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                                onClick={() => handleOpenDocument(item)}
+                                title="전표 출력"
+                              >
+                                <FileText className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                onClick={() => handleCancelItem(item)}
+                                title="불출 취소"
+                              >
+                                <XCircle className="h-4 w-4" />
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       ))
@@ -707,10 +697,22 @@ export const MaterialReceiving = () => {
         initialFile={droppedFile}
         onImportComplete={(result) => {
           if (result.success) {
-            loadTodayReceivings()
-            toast.success(`${result.importedRows}건 입고 완료`)
+            loadTodayIssuings()
+            toast.success(`${result.importedRows}건 불출 완료`)
           }
         }}
+      />
+
+      {/* 불출 전표 다이얼로그 */}
+      <DocumentPreviewDialog
+        open={documentDialogOpen}
+        onOpenChange={(open) => {
+          setDocumentDialogOpen(open)
+          if (!open) {
+            setSelectedItemForDocument(null)
+          }
+        }}
+        data={getDocumentData()}
       />
     </div>
   )

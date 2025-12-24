@@ -45,6 +45,11 @@ export interface ReceiveStockResult {
   error?: string
 }
 
+// ============================================
+// 재고 위치 타입 (Phase 5: 3단계 재고 관리)
+// ============================================
+export type StockLocation = 'warehouse' | 'production' | 'process'
+
 export interface StockItem {
   id: number
   materialId: number
@@ -54,8 +59,10 @@ export interface StockItem {
   quantity: number
   usedQty: number
   availableQty: number
+  unit?: string  // 단위 (StockContext 호환)
   receivedAt: string  // ISO string for localStorage
-  processCode?: string  // Phase A: 공정 코드 (공정별 재고 관리용)
+  location: StockLocation  // Phase 5: 재고 위치 (warehouse=자재창고, production=생산창고, process=공정)
+  processCode?: string  // location='process'일 때만 사용
 }
 
 // ============================================
@@ -208,16 +215,20 @@ export function isLotExists(lotNumber: string): boolean {
 
 /**
  * 자재 입고 처리 (Mock)
+ * - location='warehouse'로 자재 창고에 입고
  */
 export async function receiveStock(input: ReceiveStockInput): Promise<ReceiveStockResult> {
   await new Promise((r) => setTimeout(r, 300))
 
-  // 중복 LOT 체크
-  if (isLotExists(input.lotNumber)) {
+  // 중복 LOT 체크 (같은 위치에서만)
+  const existingInWarehouse = MOCK_STOCKS.find(
+    s => s.lotNumber === input.lotNumber && s.location === 'warehouse'
+  )
+  if (existingInWarehouse) {
     return {
       success: false,
       id: 0,
-      error: `LOT ${input.lotNumber}은(는) 이미 등록되어 있습니다.`,
+      error: `LOT ${input.lotNumber}은(는) 이미 자재 창고에 등록되어 있습니다.`,
     }
   }
 
@@ -236,6 +247,7 @@ export async function receiveStock(input: ReceiveStockInput): Promise<ReceiveSto
     usedQty: 0,
     availableQty: input.quantity,
     receivedAt,
+    location: 'warehouse',  // Phase 5: 자재 창고에 입고
   }
 
   MOCK_STOCKS.push(stockItem)
@@ -872,6 +884,7 @@ export async function registerProcessStock(input: ProcessStockInput): Promise<Pr
     usedQty: 0,
     availableQty: input.quantity,
     receivedAt,
+    location: 'process',  // Phase 5: 공정 재고
     processCode: input.processCode,
   }
 
@@ -1186,6 +1199,501 @@ export async function getTodayProcessReceivings(
     receivedAt: s.receivedAt,
   }))
 }
+
+// ============================================
+// Phase 5: 3단계 재고 관리 Functions
+// 자재창고 → 생산창고 → 공정재고
+// ============================================
+
+/**
+ * 불출 입력 타입
+ */
+export interface IssueToProductionInput {
+  materialId: number
+  materialCode: string
+  materialName?: string
+  lotNumber: string
+  quantity: number
+}
+
+/**
+ * 불출 결과 타입
+ */
+export interface IssueToProductionResult {
+  success: boolean
+  warehouseStock?: StockItem  // 차감된 자재창고 재고
+  productionStock?: StockItem  // 생성된 생산창고 재고
+  issuedQty: number
+  error?: string
+}
+
+/**
+ * 자재 불출 (자재창고 → 생산창고)
+ * - 자재창고에서 availableQty 차감
+ * - 생산창고에 새 레코드 생성 (또는 기존 LOT에 수량 추가)
+ */
+export async function issueToProduction(input: IssueToProductionInput): Promise<IssueToProductionResult> {
+  await new Promise((r) => setTimeout(r, 100))
+
+  // 자재창고에서 해당 LOT 찾기
+  const warehouseStock = MOCK_STOCKS.find(
+    s => s.lotNumber === input.lotNumber && s.location === 'warehouse'
+  )
+
+  // 자재창고에 없으면 바코드 스캔으로 직접 생산창고에 등록 (자재창고 재고 없이)
+  if (!warehouseStock) {
+    // 생산창고에 이미 있는지 확인
+    const existingProduction = MOCK_STOCKS.find(
+      s => s.lotNumber === input.lotNumber && s.location === 'production'
+    )
+
+    if (existingProduction) {
+      // 이미 소진된 LOT인지 확인
+      if (existingProduction.availableQty <= 0 && existingProduction.usedQty > 0) {
+        return {
+          success: false,
+          issuedQty: 0,
+          error: `LOT ${input.lotNumber}은(는) 이미 사용이 완료된 바코드입니다.`,
+        }
+      }
+
+      // 기존 LOT에 수량 추가
+      existingProduction.quantity += input.quantity
+      existingProduction.availableQty += input.quantity
+      saveStocks()
+
+      return {
+        success: true,
+        productionStock: existingProduction,
+        issuedQty: input.quantity,
+      }
+    }
+
+    // 생산창고에 새로 등록
+    const newId = MOCK_STOCKS.length > 0 ? Math.max(...MOCK_STOCKS.map(s => s.id)) + 1 : 1
+    const newProductionStock: StockItem = {
+      id: newId,
+      materialId: input.materialId,
+      materialCode: input.materialCode,
+      materialName: input.materialName || input.materialCode,
+      lotNumber: input.lotNumber,
+      quantity: input.quantity,
+      usedQty: 0,
+      availableQty: input.quantity,
+      receivedAt: new Date().toISOString(),
+      location: 'production',
+    }
+
+    MOCK_STOCKS.push(newProductionStock)
+    saveStocks()
+
+    // 입고 기록 생성
+    const receivingRecord: ReceivingRecord = {
+      id: newId,
+      lotNumber: input.lotNumber,
+      quantity: input.quantity,
+      receivedAt: new Date().toISOString(),
+      material: {
+        code: input.materialCode,
+        name: input.materialName || input.materialCode,
+        unit: 'EA',
+      },
+    }
+    mockReceivings.push(receivingRecord)
+    saveReceivings()
+
+    return {
+      success: true,
+      productionStock: newProductionStock,
+      issuedQty: input.quantity,
+    }
+  }
+
+  // 자재창고 재고가 있는 경우
+  const availableQty = warehouseStock.availableQty
+  if (availableQty <= 0) {
+    return {
+      success: false,
+      issuedQty: 0,
+      error: `LOT ${input.lotNumber}의 자재창고 재고가 부족합니다. (가용: ${availableQty})`,
+    }
+  }
+
+  // 불출할 수량 결정 (요청 수량 또는 가용 수량 중 작은 값)
+  const issueQty = Math.min(input.quantity, availableQty)
+
+  // 자재창고에서 차감
+  warehouseStock.usedQty += issueQty
+  warehouseStock.availableQty = warehouseStock.quantity - warehouseStock.usedQty
+
+  // 생산창고에 있는지 확인
+  const existingProduction = MOCK_STOCKS.find(
+    s => s.lotNumber === input.lotNumber && s.location === 'production'
+  )
+
+  let productionStock: StockItem
+
+  if (existingProduction) {
+    // 기존 생산창고 LOT에 수량 추가
+    existingProduction.quantity += issueQty
+    existingProduction.availableQty += issueQty
+    productionStock = existingProduction
+  } else {
+    // 생산창고에 새 레코드 생성
+    const newId = MOCK_STOCKS.length > 0 ? Math.max(...MOCK_STOCKS.map(s => s.id)) + 1 : 1
+    productionStock = {
+      id: newId,
+      materialId: warehouseStock.materialId,
+      materialCode: warehouseStock.materialCode,
+      materialName: warehouseStock.materialName,
+      lotNumber: warehouseStock.lotNumber,
+      quantity: issueQty,
+      usedQty: 0,
+      availableQty: issueQty,
+      receivedAt: new Date().toISOString(),
+      location: 'production',
+    }
+    MOCK_STOCKS.push(productionStock)
+  }
+
+  saveStocks()
+
+  return {
+    success: true,
+    warehouseStock,
+    productionStock,
+    issuedQty: issueQty,
+  }
+}
+
+/**
+ * 공정 스캔 입력 타입
+ */
+export interface ScanToProcessInput {
+  processCode: string
+  materialId: number
+  materialCode: string
+  materialName?: string
+  lotNumber: string
+  quantity: number
+}
+
+/**
+ * 공정 스캔 결과 타입
+ */
+export interface ScanToProcessResult {
+  success: boolean
+  productionStock?: StockItem  // 차감된 생산창고 재고
+  processStock?: StockItem     // 생성된 공정 재고
+  scannedQty: number
+  error?: string
+}
+
+/**
+ * 공정 자재 스캔 (생산창고 → 공정재고)
+ * - 생산창고에서 availableQty 차감
+ * - 해당 공정에 새 레코드 생성 (또는 기존 LOT에 수량 추가)
+ */
+export async function scanToProcess(input: ScanToProcessInput): Promise<ScanToProcessResult> {
+  await new Promise((r) => setTimeout(r, 100))
+
+  if (!input.processCode) {
+    return {
+      success: false,
+      scannedQty: 0,
+      error: '공정 코드가 필요합니다.',
+    }
+  }
+
+  // 생산창고에서 해당 LOT 찾기
+  const productionStock = MOCK_STOCKS.find(
+    s => s.lotNumber === input.lotNumber && s.location === 'production'
+  )
+
+  if (!productionStock) {
+    return {
+      success: false,
+      scannedQty: 0,
+      error: `LOT ${input.lotNumber}이(가) 생산창고에 없습니다. 먼저 자재 불출을 해주세요.`,
+    }
+  }
+
+  const availableQty = productionStock.availableQty
+  if (availableQty <= 0) {
+    return {
+      success: false,
+      scannedQty: 0,
+      error: `LOT ${input.lotNumber}의 생산창고 재고가 부족합니다. (가용: ${availableQty})`,
+    }
+  }
+
+  // 스캔할 수량 결정
+  const scanQty = Math.min(input.quantity, availableQty)
+
+  // 생산창고에서 차감
+  productionStock.usedQty += scanQty
+  productionStock.availableQty = productionStock.quantity - productionStock.usedQty
+
+  // 해당 공정에 있는지 확인
+  const existingProcess = MOCK_STOCKS.find(
+    s => s.lotNumber === input.lotNumber && s.location === 'process' && s.processCode === input.processCode
+  )
+
+  let processStock: StockItem
+
+  if (existingProcess) {
+    // 이미 소진된 LOT인지 확인
+    if (existingProcess.availableQty <= 0 && existingProcess.usedQty > 0) {
+      // 생산창고 차감 롤백
+      productionStock.usedQty -= scanQty
+      productionStock.availableQty = productionStock.quantity - productionStock.usedQty
+      saveStocks()
+
+      return {
+        success: false,
+        scannedQty: 0,
+        error: `LOT ${input.lotNumber}은(는) ${input.processCode} 공정에서 이미 사용이 완료된 바코드입니다.`,
+      }
+    }
+
+    // 기존 공정 LOT에 수량 추가
+    existingProcess.quantity += scanQty
+    existingProcess.availableQty += scanQty
+    processStock = existingProcess
+  } else {
+    // 공정에 새 레코드 생성
+    const newId = MOCK_STOCKS.length > 0 ? Math.max(...MOCK_STOCKS.map(s => s.id)) + 1 : 1
+    processStock = {
+      id: newId,
+      materialId: productionStock.materialId,
+      materialCode: productionStock.materialCode,
+      materialName: productionStock.materialName,
+      lotNumber: productionStock.lotNumber,
+      quantity: scanQty,
+      usedQty: 0,
+      availableQty: scanQty,
+      receivedAt: new Date().toISOString(),
+      location: 'process',
+      processCode: input.processCode,
+    }
+    MOCK_STOCKS.push(processStock)
+  }
+
+  saveStocks()
+
+  return {
+    success: true,
+    productionStock,
+    processStock,
+    scannedQty: scanQty,
+  }
+}
+
+/**
+ * 위치별 재고 조회
+ */
+export async function getStocksByLocation(
+  location: StockLocation,
+  options?: {
+    processCode?: string  // location='process'일 때만 사용
+    materialCode?: string
+    showZero?: boolean
+  }
+): Promise<StockItem[]> {
+  await new Promise((r) => setTimeout(r, 100))
+
+  let result = MOCK_STOCKS.filter(s => s.location === location)
+
+  // 공정 필터 (location='process'일 때)
+  if (location === 'process' && options?.processCode) {
+    result = result.filter(s => s.processCode === options.processCode)
+  }
+
+  // 자재 코드 필터
+  if (options?.materialCode) {
+    result = result.filter((s) =>
+      s.materialCode.toLowerCase().includes(options.materialCode!.toLowerCase()) ||
+      s.materialName.toLowerCase().includes(options.materialCode!.toLowerCase())
+    )
+  }
+
+  // 소진 재고 숨기기 (기본)
+  if (!options?.showZero) {
+    result = result.filter((s) => s.availableQty > 0)
+  }
+
+  // 최신순 정렬
+  result.sort((a, b) => b.receivedAt.localeCompare(a.receivedAt))
+
+  return result
+}
+
+/**
+ * 위치별 재고 요약
+ */
+export async function getLocationStockSummary(location: StockLocation): Promise<{
+  totalLots: number
+  totalQuantity: number
+  totalAvailable: number
+  totalUsed: number
+  materialCount: number
+}> {
+  await new Promise((r) => setTimeout(r, 100))
+
+  const stocks = MOCK_STOCKS.filter(s => s.location === location)
+  const materialCodes = new Set(stocks.map((s) => s.materialCode))
+
+  return {
+    totalLots: stocks.length,
+    totalQuantity: stocks.reduce((sum, s) => sum + s.quantity, 0),
+    totalAvailable: stocks.reduce((sum, s) => sum + s.availableQty, 0),
+    totalUsed: stocks.reduce((sum, s) => sum + s.usedQty, 0),
+    materialCount: materialCodes.size,
+  }
+}
+
+/**
+ * 금일 불출 내역 조회
+ */
+export interface IssuingRecord {
+  id: number
+  materialCode: string
+  materialName: string
+  lotNumber: string
+  quantity: number
+  availableQty: number
+  issuedAt: string
+}
+
+export async function getTodayIssuings(): Promise<IssuingRecord[]> {
+  await new Promise((r) => setTimeout(r, 100))
+
+  const today = new Date().toISOString().split('T')[0]
+
+  // 생산창고에 있는 금일 등록된 재고
+  const productionStocks = MOCK_STOCKS.filter(
+    s => s.location === 'production' && s.receivedAt.startsWith(today)
+  )
+
+  // 최신순 정렬
+  productionStocks.sort((a, b) => b.receivedAt.localeCompare(a.receivedAt))
+
+  return productionStocks.map(s => ({
+    id: s.id,
+    materialCode: s.materialCode,
+    materialName: s.materialName,
+    lotNumber: s.lotNumber,
+    quantity: s.quantity,
+    availableQty: s.availableQty,
+    issuedAt: s.receivedAt,
+  }))
+}
+
+/**
+ * 생산창고 가용 재고 확인 (LOT 번호로)
+ */
+export async function getProductionStockByLot(lotNumber: string): Promise<StockItem | null> {
+  await new Promise((r) => setTimeout(r, 50))
+
+  return MOCK_STOCKS.find(
+    s => s.lotNumber === lotNumber && s.location === 'production'
+  ) || null
+}
+
+/**
+ * 기존 데이터 마이그레이션 (processCode → location)
+ * 기존 processCode가 있는 데이터를 location='process'로 변환
+ */
+export function migrateToLocationBasedStock(): number {
+  let migratedCount = 0
+
+  for (const stock of MOCK_STOCKS) {
+    // location이 없는 경우 (기존 데이터)
+    if (!stock.location) {
+      if (stock.processCode) {
+        // processCode가 있으면 공정 재고
+        stock.location = 'process'
+      } else {
+        // 없으면 자재 창고
+        stock.location = 'warehouse'
+      }
+      migratedCount++
+    }
+  }
+
+  if (migratedCount > 0) {
+    saveStocks()
+  }
+
+  return migratedCount
+}
+
+/**
+ * 불출 취소 결과 타입
+ */
+export interface CancelIssueResult {
+  success: boolean
+  cancelledQty: number
+  error?: string
+}
+
+/**
+ * 불출 취소 (생산창고 재고 삭제 또는 수량 감소)
+ * - 이미 공정에서 사용된 경우 (usedQty > 0) 취소 불가
+ * - 가용 수량만 취소 가능
+ */
+export async function cancelIssue(stockId: number): Promise<CancelIssueResult> {
+  await new Promise((r) => setTimeout(r, 100))
+
+  // 생산창고에서 해당 재고 찾기
+  const stockIndex = MOCK_STOCKS.findIndex(
+    s => s.id === stockId && s.location === 'production'
+  )
+
+  if (stockIndex === -1) {
+    return {
+      success: false,
+      cancelledQty: 0,
+      error: '생산창고에서 해당 불출 내역을 찾을 수 없습니다.',
+    }
+  }
+
+  const stock = MOCK_STOCKS[stockIndex]
+
+  // 이미 사용된 수량이 있으면 취소 불가
+  if (stock.usedQty > 0) {
+    return {
+      success: false,
+      cancelledQty: 0,
+      error: `이미 ${stock.usedQty}개가 공정에서 사용되어 취소할 수 없습니다.`,
+    }
+  }
+
+  const cancelledQty = stock.quantity
+
+  // 생산창고에서 삭제
+  MOCK_STOCKS.splice(stockIndex, 1)
+  saveStocks()
+
+  return {
+    success: true,
+    cancelledQty,
+  }
+}
+
+/**
+ * 생산창고 재고 상세 조회 (ID로)
+ */
+export async function getProductionStockById(stockId: number): Promise<StockItem | null> {
+  await new Promise((r) => setTimeout(r, 50))
+
+  return MOCK_STOCKS.find(
+    s => s.id === stockId && s.location === 'production'
+  ) || null
+}
+
+// 앱 시작 시 자동 마이그레이션
+migrateToLocationBasedStock()
 
 // Re-export types
 export type { CalculatedRequirement }

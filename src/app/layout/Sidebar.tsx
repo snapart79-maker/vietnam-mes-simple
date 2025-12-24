@@ -134,7 +134,7 @@ export const Sidebar = ({ isCollapsed = false, toggleSidebar, isMobile = false, 
         <GroupHeader label="자재 관리" icon={Package} id="material" {...groupProps} />
         {((!isCollapsed || isMobile) && expandedMenus.material) && (
           <div className="space-y-1 mt-1">
-            <NavItem to="/material/receiving" label="공정 자재 스캔" indent {...navProps} />
+            <NavItem to="/material/receiving" label="자재 불출" indent {...navProps} />
             <NavItem to="/material/stock" label="자재 현황" indent {...navProps} />
           </div>
         )}

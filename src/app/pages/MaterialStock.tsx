@@ -26,12 +26,19 @@ import { Search, Download, Layers, RefreshCw, Trash2, ArrowUpRight, FolderTree, 
 import { Badge } from '../components/ui/badge';
 import { downloadExcel } from '@/lib/excelUtils';
 import { toast } from 'sonner';
-import { useStock, type StockItem } from '../context/StockContext';
+import { useStock, type StockItem, type StockLocation } from '../context/StockContext';
+import { Warehouse, PackageCheck } from 'lucide-react';
 
-// 공정 목록 (Phase C: 공정별 필터링)
+// Phase 5: 위치 옵션 (3단계 재고)
+const LOCATION_OPTIONS = [
+  { code: 'warehouse' as StockLocation, name: '자재 창고', icon: Warehouse },
+  { code: 'production' as StockLocation, name: '생산 창고', icon: PackageCheck },
+  { code: 'process' as StockLocation, name: '공정 재고', icon: Factory },
+];
+
+// 공정 목록 (location='process'일 때만 사용)
 const PROCESS_OPTIONS = [
-  { code: 'ALL', name: '전체' },
-  { code: 'UNASSIGNED', name: '미지정' },
+  { code: 'ALL', name: '전체 공정' },
   { code: 'CA', name: 'CA (자동절압착)' },
   { code: 'MC', name: 'MC (수동압착)' },
   { code: 'SB', name: 'SB (서브조립)' },
@@ -53,6 +60,8 @@ export const MaterialStock = () => {
     getStockSummary,
     getStocksByProcess,
     getProcessStockSummary,
+    getStocksByLocation,
+    getLocationStockSummary,
     deleteStockItems: contextDeleteStockItems,
     resetAllStockData: contextResetAllStockData,
     isLoading: contextLoading,
@@ -61,7 +70,9 @@ export const MaterialStock = () => {
   const [showExhausted, setShowExhausted] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('lot');
-  const [selectedProcess, setSelectedProcess] = useState('ALL'); // Phase C: 공정 필터
+  // Phase 5: 위치 필터 (자재창고/생산창고/공정)
+  const [selectedLocation, setSelectedLocation] = useState<StockLocation>('production');
+  const [selectedProcess, setSelectedProcess] = useState('ALL'); // 공정 필터 (location='process'일 때만)
 
   // LOT별 재고 데이터 (선택 기능 포함)
   const [lotStocks, setLotStocks] = useState<SelectableStockItem[]>([]);
@@ -80,37 +91,32 @@ export const MaterialStock = () => {
   const [deleteCount, setDeleteCount] = useState(0);
 
 
-  // 데이터 로드 (Phase C: 공정별 필터링 적용)
+  // 데이터 로드 (Phase 5: 위치별 필터링 적용)
   const loadData = async () => {
     setIsLoading(true);
     try {
       let stocks: StockItem[];
       let stats;
 
-      // 공정별 필터링 적용
-      if (selectedProcess === 'ALL') {
-        // 전체 조회
-        [stocks, stats] = await Promise.all([
-          getAllStocks({ showZero: showExhausted }),
-          getStockSummary(),
-        ]);
-      } else if (selectedProcess === 'UNASSIGNED') {
-        // 미지정 공정 (processCode가 없는 것)
-        const allStocks = await getAllStocks({ showZero: showExhausted });
-        stocks = allStocks.filter(s => !s.processCode);
-        // 미지정 통계 계산
-        stats = {
-          totalLots: stocks.length,
-          totalQuantity: stocks.reduce((sum, s) => sum + s.quantity, 0),
-          totalAvailable: stocks.reduce((sum, s) => sum + s.availableQty, 0),
-          totalUsed: stocks.reduce((sum, s) => sum + s.usedQty, 0),
-          materialCount: new Set(stocks.map(s => s.materialCode)).size,
-        };
+      // Phase 5: 위치별 필터링 적용
+      if (selectedLocation === 'process') {
+        // 공정 재고: 공정 코드로 추가 필터링
+        if (selectedProcess === 'ALL') {
+          // 모든 공정 재고 조회
+          stocks = await getStocksByLocation('process', { showZero: showExhausted });
+        } else {
+          // 특정 공정 재고 조회
+          stocks = await getStocksByLocation('process', {
+            processCode: selectedProcess,
+            showZero: showExhausted
+          });
+        }
+        stats = await getLocationStockSummary('process');
       } else {
-        // 특정 공정 조회
+        // 자재창고 또는 생산창고 조회
         [stocks, stats] = await Promise.all([
-          getStocksByProcess(selectedProcess, { showZero: showExhausted }),
-          getProcessStockSummary(selectedProcess),
+          getStocksByLocation(selectedLocation, { showZero: showExhausted }),
+          getLocationStockSummary(selectedLocation),
         ]);
       }
 
@@ -127,7 +133,7 @@ export const MaterialStock = () => {
 
   useEffect(() => {
     loadData();
-  }, [showExhausted, selectedProcess, getAllStocks, getStockSummary, getStocksByProcess, getProcessStockSummary]); // Context 함수 의존성 추가
+  }, [showExhausted, selectedLocation, selectedProcess, getStocksByLocation, getLocationStockSummary]);
 
   // ========== 선택 토글 함수들 ==========
 
@@ -268,51 +274,81 @@ export const MaterialStock = () => {
         </Card>
       </div>
 
-      {/* 검색 필터 (Phase C: 공정 필터 추가) */}
+      {/* Phase 5: 위치별 탭 필터 */}
       <Card>
         <CardContent className="py-4">
-          <div className="flex flex-col md:flex-row gap-4 items-end">
-            {/* 공정 필터 (Phase C) */}
-            <div className="grid gap-1.5 w-full md:w-48">
-              <Label htmlFor="process-filter" className="flex items-center gap-1">
-                <Factory className="h-3.5 w-3.5" />
-                공정
-              </Label>
-              <Select value={selectedProcess} onValueChange={setSelectedProcess}>
-                <SelectTrigger id="process-filter">
-                  <SelectValue placeholder="공정 선택" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PROCESS_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.code} value={opt.code}>
-                      {opt.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          <div className="space-y-4">
+            {/* 위치 탭 */}
+            <div className="flex gap-2">
+              {LOCATION_OPTIONS.map((opt) => {
+                const Icon = opt.icon;
+                const isActive = selectedLocation === opt.code;
+                return (
+                  <Button
+                    key={opt.code}
+                    variant={isActive ? 'default' : 'outline'}
+                    className={`flex items-center gap-2 ${
+                      isActive
+                        ? opt.code === 'warehouse' ? 'bg-blue-600 hover:bg-blue-700' :
+                          opt.code === 'production' ? 'bg-green-600 hover:bg-green-700' :
+                          'bg-purple-600 hover:bg-purple-700'
+                        : ''
+                    }`}
+                    onClick={() => setSelectedLocation(opt.code)}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {opt.name}
+                  </Button>
+                );
+              })}
             </div>
 
-            <div className="grid w-full gap-1.5 flex-1">
-              <Label htmlFor="search">검색어</Label>
-              <div className="relative">
-                <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                <Input
-                  id="search"
-                  placeholder="품번, 품명, LOT번호로 검색..."
-                  className="pl-9"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
+            {/* 필터 행 */}
+            <div className="flex flex-col md:flex-row gap-4 items-end">
+              {/* 공정 필터 (location='process'일 때만 표시) */}
+              {selectedLocation === 'process' && (
+                <div className="grid gap-1.5 w-full md:w-48">
+                  <Label htmlFor="process-filter" className="flex items-center gap-1">
+                    <Factory className="h-3.5 w-3.5" />
+                    공정
+                  </Label>
+                  <Select value={selectedProcess} onValueChange={setSelectedProcess}>
+                    <SelectTrigger id="process-filter">
+                      <SelectValue placeholder="공정 선택" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PROCESS_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.code} value={opt.code}>
+                          {opt.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              <div className="grid w-full gap-1.5 flex-1">
+                <Label htmlFor="search">검색어</Label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <Input
+                    id="search"
+                    placeholder="품번, 품명, LOT번호로 검색..."
+                    className="pl-9"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                </div>
               </div>
-            </div>
 
-            <div className="flex items-center space-x-2 pb-2">
-              <Checkbox
-                id="exhausted"
-                checked={showExhausted}
-                onCheckedChange={(checked) => setShowExhausted(checked as boolean)}
-              />
-              <Label htmlFor="exhausted" className="cursor-pointer">소진된 재고 포함</Label>
+              <div className="flex items-center space-x-2 pb-2">
+                <Checkbox
+                  id="exhausted"
+                  checked={showExhausted}
+                  onCheckedChange={(checked) => setShowExhausted(checked as boolean)}
+                />
+                <Label htmlFor="exhausted" className="cursor-pointer">소진된 재고 포함</Label>
+              </div>
             </div>
           </div>
         </CardContent>

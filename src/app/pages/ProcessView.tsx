@@ -64,7 +64,7 @@ import { useBOM } from '../context/BOMContext'
 import { useMaterial } from '../context/MaterialContext'
 import { parseBarcode, parseHQBarcode, getProcessName, generateBarcodeV2, isTempLotNumber } from '@/services/barcodeService'
 import { hasBusinessAPI, getAPI } from '@/lib/electronBridge'
-import { useStock, type ProcessStockStatus } from '../context/StockContext'
+import { useStock, type ProcessStockStatus, type ScanToProcessInput } from '../context/StockContext'
 import { type LotWithRelations } from '../context/ProductionContext'
 import { BundleDialog, LabelPreviewDialog, DocumentPreviewDialog, type DocumentData, type InputMaterialInfo } from '../components/dialogs'
 import { createLabel, printLabel, downloadLabel } from '@/services/labelService'
@@ -134,7 +134,7 @@ export const ProcessView = () => {
   const {
     deductByBOM,
     rollbackBOMDeduction,
-    registerProcessStock,
+    scanToProcess,
     checkProcessStockStatus,
   } = useStock()
 
@@ -669,10 +669,10 @@ export const ProcessView = () => {
       }
     }
 
-    // Phase B: 공정 재고 상태 확인 및 자동 등록
+    // Phase 5: 생산창고 → 공정재고 이동
     const quantity = hqParsed.quantity || (parsed.isValid ? (parsed.quantity || 1) : 1)
 
-    // 공정 재고 상태 확인
+    // 공정 재고 상태 확인 (이미 소진된 LOT인지)
     const stockStatus = await checkProcessStockStatus(processCode, trimmedBarcode)
 
     if (stockStatus.isExhausted) {
@@ -686,29 +686,31 @@ export const ProcessView = () => {
       return
     }
 
-    // 공정 재고 자동 등록
+    // 생산창고 → 공정재고 이동 (scanToProcess)
     if (matchedMaterial && isValidMaterial) {
-      const registerResult = await registerProcessStock({
+      const scanInput: ScanToProcessInput = {
         processCode,
         materialId: matchedMaterial.id,
         materialCode: matchedMaterial.code,
         materialName: matchedMaterial.name,
         lotNumber: trimmedBarcode,
         quantity,
-      })
+      }
 
-      if (!registerResult.success) {
-        toast.error(registerResult.error || '공정 재고 등록 실패')
+      const scanResult = await scanToProcess(scanInput)
+
+      if (!scanResult.success) {
+        toast.error(scanResult.error || '공정 스캔 실패')
         setBarcode('')
         setTimeout(() => barcodeInputRef.current?.focus(), 50)
         return
       }
 
-      // 기존 LOT에 추가된 경우 알림
-      if (!registerResult.isNewEntry) {
+      // 생산창고에서 차감된 수량 알림
+      if (scanResult.productionStock) {
         toast.info(
-          `기존 재고에 추가됨 (총 ${registerResult.stock?.quantity}개, 가용 ${registerResult.stock?.availableQty}개)`,
-          { duration: 3000 }
+          `생산창고 잔여: ${scanResult.productionStock.availableQty}개`,
+          { duration: 2000 }
         )
       }
     }
