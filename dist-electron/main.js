@@ -1,2185 +1,2582 @@
-import { app as b, BrowserWindow as T, ipcMain as i, dialog as A } from "electron";
-import k from "node:path";
-import { fileURLToPath as j } from "node:url";
-import { writeFileSync as E, readFileSync as K } from "node:fs";
-import { PrismaClient as z } from "@prisma/client";
-const D = globalThis, n = D.prisma ?? new z({
+import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { writeFileSync, readFileSync } from "node:fs";
+import { PrismaClient } from "@prisma/client";
+const globalForPrisma = globalThis;
+const prisma = globalForPrisma.prisma ?? new PrismaClient({
   log: process.env.NODE_ENV === "development" ? ["query", "error", "warn"] : ["error"]
 });
-process.env.NODE_ENV !== "production" && (D.prisma = n);
-const w = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
+}
+const prisma$1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
-  default: n,
-  prisma: n
-}, Symbol.toStringTag, { value: "Module" })), O = {
-  MO: "O",
+  default: prisma,
+  prisma
+}, Symbol.toStringTag, { value: "Module" }));
+const PROCESS_SHORT_CODES = {
+  "MO": "O",
   // 자재출고
-  CA: "C",
+  "CA": "C",
   // 자동절압착
-  MC: "M",
+  "MC": "M",
   // 수동압착
-  MS: "S",
+  "MS": "S",
   // 미드스플라이스
-  SB: "B",
+  "SB": "B",
   // 서브조립
-  HS: "H",
+  "HS": "H",
   // 열수축
-  SP: "P",
+  "SP": "P",
   // 제품조립제공부품
-  PA: "A",
+  "PA": "A",
   // 제품조립
-  CI: "I",
+  "CI": "I",
   // 회로검사
-  VI: "V"
+  "VI": "V"
   // 육안검사
 };
 Object.fromEntries(
-  Object.entries(O).map(([r, t]) => [t, r])
+  Object.entries(PROCESS_SHORT_CODES).map(([k, v]) => [v, k])
 );
-function L(r = /* @__PURE__ */ new Date()) {
-  const t = String(r.getFullYear()).slice(-2), e = String(r.getMonth() + 1).padStart(2, "0"), a = String(r.getDate()).padStart(2, "0");
-  return `${t}${e}${a}`;
+function getDateString(date = /* @__PURE__ */ new Date()) {
+  const yy = String(date.getFullYear()).slice(-2);
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yy}${mm}${dd}`;
 }
-function G(r, t, e = /* @__PURE__ */ new Date()) {
-  const a = L(e), s = String(t).padStart(4, "0");
-  return `${r.toUpperCase()}-${a}-${s}`;
+function generateBarcodeV1(processCode, sequence, date = /* @__PURE__ */ new Date()) {
+  const dateStr = getDateString(date);
+  const seqStr = String(sequence).padStart(4, "0");
+  return `${processCode.toUpperCase()}-${dateStr}-${seqStr}`;
 }
-function Z(r, t, e, a, s = /* @__PURE__ */ new Date()) {
-  const c = O[r.toUpperCase()] || r[0], o = L(s), u = String(a).padStart(3, "0");
-  return `${t}Q${e}-${c}${o}-${u}`;
+function generateBarcodeV2(processCode, productCode, quantity, sequence, date = /* @__PURE__ */ new Date()) {
+  const shortCode = PROCESS_SHORT_CODES[processCode.toUpperCase()] || processCode[0];
+  const dateStr = getDateString(date);
+  const seqStr = String(sequence).padStart(3, "0");
+  return `${productCode}Q${quantity}-${shortCode}${dateStr}-${seqStr}`;
 }
-function R(r, t, e, a = /* @__PURE__ */ new Date()) {
-  const s = L(a), c = String(e).padStart(3, "0");
-  return `BD-${r}-${s}-${c}`;
+function generateBundleBarcode(productCode, _setQuantity, sequence, date = /* @__PURE__ */ new Date()) {
+  const dateStr = getDateString(date);
+  const seqStr = String(sequence).padStart(3, "0");
+  return `BD-${productCode}-${dateStr}-${seqStr}`;
 }
-const X = 4, Y = 3, B = 9999;
-async function q(r, t = /* @__PURE__ */ new Date(), e = X) {
-  const a = L(t), s = await n.$transaction(async (c) => {
-    const o = await c.sequenceCounter.findUnique({
+const DEFAULT_PADDING = 4;
+const BUNDLE_PADDING = 3;
+const MAX_SEQUENCE = 9999;
+async function getNextSequence(prefix, date = /* @__PURE__ */ new Date(), padding = DEFAULT_PADDING) {
+  const dateKey = getDateString(date);
+  const result = await prisma.$transaction(async (tx) => {
+    const existing = await tx.sequenceCounter.findUnique({
       where: {
         prefix_dateKey: {
-          prefix: r,
-          dateKey: a
+          prefix,
+          dateKey
         }
       }
     });
-    let u;
-    if (o) {
-      if (u = o.lastNumber + 1, u > B)
-        throw new Error(`시퀀스 한계 초과: ${r}-${a} (max: ${B})`);
-      await c.sequenceCounter.update({
+    let nextNumber;
+    if (existing) {
+      nextNumber = existing.lastNumber + 1;
+      if (nextNumber > MAX_SEQUENCE) {
+        throw new Error(`시퀀스 한계 초과: ${prefix}-${dateKey} (max: ${MAX_SEQUENCE})`);
+      }
+      await tx.sequenceCounter.update({
         where: {
           prefix_dateKey: {
-            prefix: r,
-            dateKey: a
+            prefix,
+            dateKey
           }
         },
         data: {
-          lastNumber: u
+          lastNumber: nextNumber
         }
       });
-    } else
-      u = 1, await c.sequenceCounter.create({
+    } else {
+      nextNumber = 1;
+      await tx.sequenceCounter.create({
         data: {
-          prefix: r,
-          dateKey: a,
-          lastNumber: u
+          prefix,
+          dateKey,
+          lastNumber: nextNumber
         }
       });
-    return u;
+    }
+    return nextNumber;
   });
   return {
-    prefix: r,
-    dateKey: a,
-    sequence: s,
-    formatted: String(s).padStart(e, "0")
+    prefix,
+    dateKey,
+    sequence: result,
+    formatted: String(result).padStart(padding, "0")
   };
 }
-async function M(r, t = /* @__PURE__ */ new Date()) {
-  const e = `${r.toUpperCase()}_BUNDLE`;
-  return q(e, t, Y);
+async function getNextBundleSequence(processCode, date = /* @__PURE__ */ new Date()) {
+  const prefix = `${processCode.toUpperCase()}_BUNDLE`;
+  return getNextSequence(prefix, date, BUNDLE_PADDING);
 }
-async function J(r) {
+async function createLot(input) {
   const {
-    processCode: t,
-    productId: e,
-    productCode: a,
-    lineCode: s,
-    plannedQty: c = 0,
-    workerId: o,
-    barcodeVersion: u = 2
-  } = r, d = await q(t);
-  let l;
-  return u === 1 ? l = G(t, d.sequence) : l = Z(t, a || "TEMP", c, d.sequence), await n.productionLot.create({
+    processCode,
+    productId,
+    productCode,
+    lineCode,
+    plannedQty = 0,
+    workerId,
+    barcodeVersion = 2
+  } = input;
+  const sequence = await getNextSequence(processCode);
+  let lotNumber;
+  if (barcodeVersion === 1) {
+    lotNumber = generateBarcodeV1(processCode, sequence.sequence);
+  } else {
+    const code = productCode || "TEMP";
+    lotNumber = generateBarcodeV2(processCode, code, plannedQty, sequence.sequence);
+  }
+  const lot = await prisma.productionLot.create({
     data: {
-      lotNumber: l,
-      processCode: t.toUpperCase(),
-      productId: e,
-      lineCode: s,
-      plannedQty: c,
-      workerId: o,
-      barcodeVersion: u,
+      lotNumber,
+      processCode: processCode.toUpperCase(),
+      productId,
+      lineCode,
+      plannedQty,
+      workerId,
+      barcodeVersion,
       status: "IN_PROGRESS"
     },
     include: {
       product: {
-        select: { id: !0, code: !0, name: !0 }
+        select: { id: true, code: true, name: true }
       },
       worker: {
-        select: { id: !0, name: !0 }
+        select: { id: true, name: true }
       },
       lotMaterials: {
         include: {
           material: {
-            select: { id: !0, code: !0, name: !0 }
+            select: { id: true, code: true, name: true }
           }
         }
       }
     }
   });
+  return lot;
 }
-async function ee(r, t, e) {
-  return await n.productionLot.update({
-    where: { id: r },
+async function startProduction(lotId, lineCode, workerId) {
+  const lot = await prisma.productionLot.update({
+    where: { id: lotId },
     data: {
-      lineCode: t,
-      workerId: e,
+      lineCode,
+      workerId,
       startedAt: /* @__PURE__ */ new Date(),
       status: "IN_PROGRESS"
     },
     include: {
       product: {
-        select: { id: !0, code: !0, name: !0 }
+        select: { id: true, code: true, name: true }
       },
       worker: {
-        select: { id: !0, name: !0 }
+        select: { id: true, name: true }
       },
       lotMaterials: {
         include: {
           material: {
-            select: { id: !0, code: !0, name: !0 }
+            select: { id: true, code: true, name: true }
           }
         }
       }
     }
   });
+  return lot;
 }
-async function te(r) {
-  const { lotId: t, completedQty: e, defectQty: a = 0 } = r;
-  return await n.productionLot.update({
-    where: { id: t },
+async function completeProduction(input) {
+  const { lotId, completedQty, defectQty = 0 } = input;
+  const lot = await prisma.productionLot.update({
+    where: { id: lotId },
     data: {
-      completedQty: e,
-      defectQty: a,
+      completedQty,
+      defectQty,
       completedAt: /* @__PURE__ */ new Date(),
       status: "COMPLETED"
     },
     include: {
       product: {
-        select: { id: !0, code: !0, name: !0 }
+        select: { id: true, code: true, name: true }
       },
       worker: {
-        select: { id: !0, name: !0 }
+        select: { id: true, name: true }
       },
       lotMaterials: {
         include: {
           material: {
-            select: { id: !0, code: !0, name: !0 }
+            select: { id: true, code: true, name: true }
           }
         }
       }
     }
   });
+  return lot;
 }
-async function re(r, t) {
-  return await n.productionLot.update({
-    where: { id: r },
-    data: t,
+async function updateLotQuantity(lotId, updates) {
+  const lot = await prisma.productionLot.update({
+    where: { id: lotId },
+    data: updates,
     include: {
       product: {
-        select: { id: !0, code: !0, name: !0 }
+        select: { id: true, code: true, name: true }
       },
       worker: {
-        select: { id: !0, name: !0 }
+        select: { id: true, name: true }
       },
       lotMaterials: {
         include: {
           material: {
-            select: { id: !0, code: !0, name: !0 }
+            select: { id: true, code: true, name: true }
           }
         }
       }
     }
   });
+  return lot;
 }
-async function ae(r) {
-  const { lotId: t, materialBarcode: e, materialId: a, quantity: s } = r, c = await n.lotMaterial.create({
+async function addMaterial(input) {
+  const { lotId, materialBarcode, materialId, quantity } = input;
+  const lotMaterial = await prisma.lotMaterial.create({
     data: {
-      productionLotId: t,
-      materialId: a,
-      materialLotNo: e,
-      quantity: s
+      productionLotId: lotId,
+      materialId,
+      materialLotNo: materialBarcode,
+      quantity
     }
-  }), o = await U(t);
+  });
+  const lot = await getLotById(lotId);
   return {
-    lotMaterialId: c.id,
-    lot: o
+    lotMaterialId: lotMaterial.id,
+    lot
   };
 }
-async function se(r) {
-  await n.lotMaterial.delete({
-    where: { id: r }
+async function removeMaterial(lotMaterialId) {
+  await prisma.lotMaterial.delete({
+    where: { id: lotMaterialId }
   });
 }
-async function U(r) {
-  return n.productionLot.findUnique({
-    where: { id: r },
+async function getLotById(lotId) {
+  return prisma.productionLot.findUnique({
+    where: { id: lotId },
     include: {
       product: {
-        select: { id: !0, code: !0, name: !0 }
+        select: { id: true, code: true, name: true }
       },
       worker: {
-        select: { id: !0, name: !0 }
+        select: { id: true, name: true }
       },
       lotMaterials: {
         include: {
           material: {
-            select: { id: !0, code: !0, name: !0 }
+            select: { id: true, code: true, name: true }
           }
         }
       }
     }
   });
 }
-async function oe(r) {
-  return n.productionLot.findUnique({
-    where: { lotNumber: r },
+async function getLotByNumber(lotNumber) {
+  return prisma.productionLot.findUnique({
+    where: { lotNumber },
     include: {
       product: {
-        select: { id: !0, code: !0, name: !0 }
+        select: { id: true, code: true, name: true }
       },
       worker: {
-        select: { id: !0, name: !0 }
+        select: { id: true, name: true }
       },
       lotMaterials: {
         include: {
           material: {
-            select: { id: !0, code: !0, name: !0 }
+            select: { id: true, code: true, name: true }
           }
         }
       }
     }
   });
 }
-async function ce(r, t) {
-  const { status: e, startDate: a, endDate: s, limit: c = 100 } = {}, o = {
-    processCode: r.toUpperCase()
+async function getLotsByProcess(processCode, options) {
+  const { status, startDate, endDate, limit = 100 } = {};
+  const where = {
+    processCode: processCode.toUpperCase()
   };
-  return e && (o.status = e), (a || s) && (o.startedAt = {}, a && (o.startedAt.gte = a), s && (o.startedAt.lte = s)), n.productionLot.findMany({
-    where: o,
+  if (status) {
+    where.status = status;
+  }
+  if (startDate || endDate) {
+    where.startedAt = {};
+    if (startDate) where.startedAt.gte = startDate;
+    if (endDate) where.startedAt.lte = endDate;
+  }
+  return prisma.productionLot.findMany({
+    where,
     include: {
       product: {
-        select: { id: !0, code: !0, name: !0 }
+        select: { id: true, code: true, name: true }
       },
       worker: {
-        select: { id: !0, name: !0 }
+        select: { id: true, name: true }
       },
       lotMaterials: {
         include: {
           material: {
-            select: { id: !0, code: !0, name: !0 }
+            select: { id: true, code: true, name: true }
           }
         }
       }
     },
     orderBy: { startedAt: "desc" },
-    take: c
+    take: limit
   });
 }
-async function ne(r, t) {
-  const { processCode: e, limit: a = 100 } = {}, s = { status: r };
-  return e && (s.processCode = e.toUpperCase()), n.productionLot.findMany({
-    where: s,
+async function getLotsByStatus(status, options) {
+  const { processCode, limit = 100 } = {};
+  const where = { status };
+  if (processCode) {
+    where.processCode = processCode.toUpperCase();
+  }
+  return prisma.productionLot.findMany({
+    where,
     include: {
       product: {
-        select: { id: !0, code: !0, name: !0 }
+        select: { id: true, code: true, name: true }
       },
       worker: {
-        select: { id: !0, name: !0 }
+        select: { id: true, name: true }
       },
       lotMaterials: {
         include: {
           material: {
-            select: { id: !0, code: !0, name: !0 }
+            select: { id: true, code: true, name: true }
           }
         }
       }
     },
     orderBy: { startedAt: "desc" },
-    take: a
+    take: limit
   });
 }
-async function ue(r) {
-  if (r.itemType === "MATERIAL" && !r.materialId)
+async function createBOMItem(input) {
+  if (input.itemType === "MATERIAL" && !input.materialId) {
     throw new Error("자재 BOM은 materialId가 필요합니다.");
-  if (r.itemType === "PRODUCT" && !r.childProductId)
+  }
+  if (input.itemType === "PRODUCT" && !input.childProductId) {
     throw new Error("반제품 BOM은 childProductId가 필요합니다.");
-  return n.bOM.create({
+  }
+  return prisma.bOM.create({
     data: {
-      productId: r.productId,
-      itemType: r.itemType,
-      materialId: r.materialId,
-      childProductId: r.childProductId,
-      quantity: r.quantity,
-      unit: r.unit,
-      processCode: r.processCode
+      productId: input.productId,
+      itemType: input.itemType,
+      materialId: input.materialId,
+      childProductId: input.childProductId,
+      quantity: input.quantity,
+      unit: input.unit,
+      processCode: input.processCode
     },
     include: {
       material: {
-        select: { id: !0, code: !0, name: !0, unit: !0 }
+        select: { id: true, code: true, name: true, unit: true }
       },
       childProduct: {
-        select: { id: !0, code: !0, name: !0, type: !0 }
+        select: { id: true, code: true, name: true, type: true }
       }
     }
   });
 }
-async function ie(r, t) {
-  return n.bOM.update({
-    where: { id: r },
-    data: t,
+async function updateBOMItem(id, input) {
+  return prisma.bOM.update({
+    where: { id },
+    data: input,
     include: {
       material: {
-        select: { id: !0, code: !0, name: !0, unit: !0 }
+        select: { id: true, code: true, name: true, unit: true }
       },
       childProduct: {
-        select: { id: !0, code: !0, name: !0, type: !0 }
+        select: { id: true, code: true, name: true, type: true }
       }
     }
   });
 }
-async function de(r) {
-  await n.bOM.delete({
-    where: { id: r }
+async function deleteBOMItem(id) {
+  await prisma.bOM.delete({
+    where: { id }
   });
 }
-async function le(r) {
-  return (await n.bOM.findMany({
-    where: { productId: r },
+async function getBOMByProduct(productId) {
+  const items = await prisma.bOM.findMany({
+    where: { productId },
     include: {
       material: {
-        select: { id: !0, code: !0, name: !0, unit: !0 }
+        select: { id: true, code: true, name: true, unit: true }
       },
       childProduct: {
-        select: { id: !0, code: !0, name: !0, type: !0 }
+        select: { id: true, code: true, name: true, type: true }
       }
     },
     orderBy: [
       { itemType: "asc" },
       { id: "asc" }
     ]
-  })).map((e) => ({
-    id: e.id,
-    itemType: e.itemType,
-    quantity: e.quantity,
-    unit: e.unit,
-    processCode: e.processCode,
-    material: e.material || void 0,
-    childProduct: e.childProduct || void 0
+  });
+  return items.map((item) => ({
+    id: item.id,
+    itemType: item.itemType,
+    quantity: item.quantity,
+    unit: item.unit,
+    processCode: item.processCode,
+    material: item.material || void 0,
+    childProduct: item.childProduct || void 0
   }));
 }
-async function ye(r, t) {
-  const e = {
-    productId: r,
+async function getBOMRequirements(productId, processCode) {
+  const where = {
+    productId,
     itemType: "MATERIAL",
     materialId: { not: null }
   };
-  return t && (e.processCode = t.toUpperCase()), (await n.bOM.findMany({
-    where: e,
+  if (processCode) {
+    where.processCode = processCode.toUpperCase();
+  }
+  const items = await prisma.bOM.findMany({
+    where,
     include: {
       material: {
-        select: { id: !0, code: !0, name: !0, unit: !0 }
+        select: { id: true, code: true, name: true, unit: true }
       }
     }
-  })).filter((s) => s.material !== null).map((s) => ({
-    materialId: s.material.id,
-    materialCode: s.material.code,
-    materialName: s.material.name,
-    unit: s.material.unit,
-    quantityPerUnit: s.quantity,
-    processCode: s.processCode
+  });
+  return items.filter((item) => item.material !== null).map((item) => ({
+    materialId: item.material.id,
+    materialCode: item.material.code,
+    materialName: item.material.name,
+    unit: item.material.unit,
+    quantityPerUnit: item.quantity,
+    processCode: item.processCode
   }));
 }
-async function me(r, t, e) {
-  return (await ye(r, t)).map((s) => ({
-    ...s,
-    requiredQty: s.quantityPerUnit * e
+async function calculateRequiredMaterials(productId, processCode, productionQty) {
+  const requirements = await getBOMRequirements(productId, processCode);
+  return requirements.map((req) => ({
+    ...req,
+    requiredQty: req.quantityPerUnit * productionQty
   }));
 }
-async function pe(r) {
+async function receiveStock(input) {
   try {
-    const t = await n.materialStock.create({
+    const stock = await prisma.materialStock.create({
       data: {
-        materialId: r.materialId,
-        lotNumber: r.lotNumber,
-        quantity: r.quantity,
+        materialId: input.materialId,
+        lotNumber: input.lotNumber,
+        quantity: input.quantity,
         usedQty: 0,
-        location: r.location,
+        location: input.location,
         receivedAt: /* @__PURE__ */ new Date()
       },
       include: {
         material: {
-          select: { code: !0, name: !0 }
+          select: { code: true, name: true }
         }
       }
     });
     return {
-      success: !0,
+      success: true,
       stock: {
-        id: t.id,
-        materialId: t.materialId,
-        materialCode: t.material.code,
-        materialName: t.material.name,
-        lotNumber: t.lotNumber,
-        quantity: t.quantity,
-        usedQty: t.usedQty,
-        availableQty: t.quantity - t.usedQty,
-        location: t.location,
-        receivedAt: t.receivedAt
+        id: stock.id,
+        materialId: stock.materialId,
+        materialCode: stock.material.code,
+        materialName: stock.material.name,
+        lotNumber: stock.lotNumber,
+        quantity: stock.quantity,
+        usedQty: stock.usedQty,
+        availableQty: stock.quantity - stock.usedQty,
+        location: stock.location,
+        receivedAt: stock.receivedAt
       }
     };
-  } catch (t) {
+  } catch (error) {
     return {
-      success: !1,
-      error: t instanceof Error ? t.message : "입고 처리 실패"
+      success: false,
+      error: error instanceof Error ? error.message : "입고 처리 실패"
     };
   }
 }
-async function fe(r) {
-  const { materialId: t, lotNumber: e, quantity: a, productionLotId: s } = r, c = await n.materialStock.findFirst({
+async function consumeStock(input) {
+  const { materialId, lotNumber, quantity, productionLotId } = input;
+  const stock = await prisma.materialStock.findFirst({
     where: {
-      materialId: t,
-      lotNumber: e
+      materialId,
+      lotNumber
     }
   });
-  if (!c)
-    throw new Error(`재고를 찾을 수 없습니다: ${e}`);
-  const o = c.quantity - c.usedQty;
-  if (o < a)
-    throw new Error(`재고 부족: 가용 ${o}, 요청 ${a}`);
-  await n.materialStock.update({
-    where: { id: c.id },
+  if (!stock) {
+    throw new Error(`재고를 찾을 수 없습니다: ${lotNumber}`);
+  }
+  const availableQty = stock.quantity - stock.usedQty;
+  if (availableQty < quantity) {
+    throw new Error(`재고 부족: 가용 ${availableQty}, 요청 ${quantity}`);
+  }
+  await prisma.materialStock.update({
+    where: { id: stock.id },
     data: {
-      usedQty: c.usedQty + a
-    }
-  }), s && await n.lotMaterial.create({
-    data: {
-      productionLotId: s,
-      materialId: t,
-      materialLotNo: e,
-      quantity: a
+      usedQty: stock.usedQty + quantity
     }
   });
+  if (productionLotId) {
+    await prisma.lotMaterial.create({
+      data: {
+        productionLotId,
+        materialId,
+        materialLotNo: lotNumber,
+        quantity
+      }
+    });
+  }
 }
-async function he(r) {
-  return (await n.materialStock.findMany({
-    where: { materialId: r },
+async function getStockByMaterial(materialId) {
+  const stocks = await prisma.materialStock.findMany({
+    where: { materialId },
     include: {
       material: {
-        select: { code: !0, name: !0 }
+        select: { code: true, name: true }
       }
     },
     orderBy: { receivedAt: "asc" }
-  })).map((e) => ({
-    id: e.id,
-    materialId: e.materialId,
-    materialCode: e.material.code,
-    materialName: e.material.name,
-    lotNumber: e.lotNumber,
-    quantity: e.quantity,
-    usedQty: e.usedQty,
-    availableQty: e.quantity - e.usedQty,
-    location: e.location,
-    receivedAt: e.receivedAt
+  });
+  return stocks.map((s) => ({
+    id: s.id,
+    materialId: s.materialId,
+    materialCode: s.material.code,
+    materialName: s.material.name,
+    lotNumber: s.lotNumber,
+    quantity: s.quantity,
+    usedQty: s.usedQty,
+    availableQty: s.quantity - s.usedQty,
+    location: s.location,
+    receivedAt: s.receivedAt
   }));
 }
-async function F() {
-  return (await n.material.findMany({
-    where: { isActive: !0 },
+async function getStockSummary() {
+  const materials = await prisma.material.findMany({
+    where: { isActive: true },
     include: {
       stocks: {
         select: {
-          quantity: !0,
-          usedQty: !0
+          quantity: true,
+          usedQty: true
         }
       }
     },
     orderBy: { code: "asc" }
-  })).map((t) => {
-    const e = t.stocks.reduce((o, u) => o + u.quantity, 0), a = t.stocks.reduce((o, u) => o + u.usedQty, 0), s = e - a;
-    let c = "good";
-    return s === 0 ? c = "exhausted" : s < t.safeStock * 0.3 ? c = "danger" : s < t.safeStock && (c = "warning"), {
-      materialId: t.id,
-      materialCode: t.code,
-      materialName: t.name,
-      unit: t.unit,
-      safeStock: t.safeStock,
-      totalStock: e,
-      availableStock: s,
-      lotCount: t.stocks.length,
-      status: c
+  });
+  return materials.map((mat) => {
+    const totalStock = mat.stocks.reduce((sum, s) => sum + s.quantity, 0);
+    const usedStock = mat.stocks.reduce((sum, s) => sum + s.usedQty, 0);
+    const availableStock = totalStock - usedStock;
+    let status = "good";
+    if (availableStock === 0) {
+      status = "exhausted";
+    } else if (availableStock < mat.safeStock * 0.3) {
+      status = "danger";
+    } else if (availableStock < mat.safeStock) {
+      status = "warning";
+    }
+    return {
+      materialId: mat.id,
+      materialCode: mat.code,
+      materialName: mat.name,
+      unit: mat.unit,
+      safeStock: mat.safeStock,
+      totalStock,
+      availableStock,
+      lotCount: mat.stocks.length,
+      status
     };
   });
 }
-async function we() {
-  return (await F()).filter(
-    (t) => t.status === "warning" || t.status === "danger" || t.status === "exhausted"
+async function getLowStock() {
+  const summary = await getStockSummary();
+  return summary.filter(
+    (s) => s.status === "warning" || s.status === "danger" || s.status === "exhausted"
   );
 }
-async function $(r) {
-  const t = await n.materialStock.aggregate({
-    where: { materialId: r },
+async function getAvailableQty(materialId) {
+  const result = await prisma.materialStock.aggregate({
+    where: { materialId },
     _sum: {
-      quantity: !0,
-      usedQty: !0
+      quantity: true,
+      usedQty: true
     }
-  }), e = t._sum.quantity || 0, a = t._sum.usedQty || 0;
-  return e - a;
+  });
+  const total = result._sum.quantity || 0;
+  const used = result._sum.usedQty || 0;
+  return total - used;
 }
-async function ge() {
-  const r = /* @__PURE__ */ new Date();
-  return r.setHours(0, 0, 0, 0), await n.materialStock.findMany({
+async function getTodayReceivings() {
+  const today = /* @__PURE__ */ new Date();
+  today.setHours(0, 0, 0, 0);
+  const receivings = await prisma.materialStock.findMany({
     where: {
-      receivedAt: { gte: r }
+      receivedAt: { gte: today }
     },
     include: {
       material: {
         select: {
-          code: !0,
-          name: !0,
-          unit: !0
+          code: true,
+          name: true,
+          unit: true
         }
       }
     },
     orderBy: { receivedAt: "desc" }
   });
+  return receivings;
 }
-async function _(r, t, e, a = !0) {
-  const s = await n.materialStock.findMany({
-    where: { materialId: r },
+async function consumeStockFIFOWithNegative(materialId, quantity, productionLotId, allowNegative = true) {
+  const stocks = await prisma.materialStock.findMany({
+    where: { materialId },
     orderBy: { receivedAt: "asc" }
   });
-  let c = t;
-  const o = [];
-  let u = 0;
-  for (const d of s) {
-    if (c <= 0) break;
-    const l = d.quantity - d.usedQty;
-    if (l <= 0) continue;
-    const y = Math.min(l, c);
-    await n.materialStock.update({
-      where: { id: d.id },
-      data: { usedQty: d.usedQty + y }
-    }), e && await n.lotMaterial.create({
-      data: {
-        productionLotId: e,
-        materialId: r,
-        materialLotNo: d.lotNumber,
-        quantity: y
-      }
-    }), o.push({ lotNumber: d.lotNumber, usedQty: y }), u += y, c -= y;
-  }
-  if (c > 0 && a) {
-    const d = s.length > 0 ? s[s.length - 1] : null;
-    if (d) {
-      await n.materialStock.update({
-        where: { id: d.id },
-        data: { usedQty: d.usedQty + c }
-      }), e && await n.lotMaterial.create({
+  let remainingQty = quantity;
+  const usedLots = [];
+  let totalDeducted = 0;
+  for (const stock of stocks) {
+    if (remainingQty <= 0) break;
+    const availableQty = stock.quantity - stock.usedQty;
+    if (availableQty <= 0) continue;
+    const useQty = Math.min(availableQty, remainingQty);
+    await prisma.materialStock.update({
+      where: { id: stock.id },
+      data: { usedQty: stock.usedQty + useQty }
+    });
+    if (productionLotId) {
+      await prisma.lotMaterial.create({
         data: {
-          productionLotId: e,
-          materialId: r,
-          materialLotNo: d.lotNumber,
-          quantity: c
+          productionLotId,
+          materialId,
+          materialLotNo: stock.lotNumber,
+          quantity: useQty
         }
       });
-      const l = o.find((y) => y.lotNumber === d.lotNumber);
-      l ? l.usedQty += c : o.push({ lotNumber: d.lotNumber, usedQty: c }), u += c, c = 0;
+    }
+    usedLots.push({ lotNumber: stock.lotNumber, usedQty: useQty });
+    totalDeducted += useQty;
+    remainingQty -= useQty;
+  }
+  if (remainingQty > 0 && allowNegative) {
+    const targetStock = stocks.length > 0 ? stocks[stocks.length - 1] : null;
+    if (targetStock) {
+      await prisma.materialStock.update({
+        where: { id: targetStock.id },
+        data: { usedQty: targetStock.usedQty + remainingQty }
+      });
+      if (productionLotId) {
+        await prisma.lotMaterial.create({
+          data: {
+            productionLotId,
+            materialId,
+            materialLotNo: targetStock.lotNumber,
+            quantity: remainingQty
+          }
+        });
+      }
+      const existingLot = usedLots.find((l) => l.lotNumber === targetStock.lotNumber);
+      if (existingLot) {
+        existingLot.usedQty += remainingQty;
+      } else {
+        usedLots.push({ lotNumber: targetStock.lotNumber, usedQty: remainingQty });
+      }
+      totalDeducted += remainingQty;
+      remainingQty = 0;
     }
   }
   return {
-    lots: o,
-    deductedQty: u,
-    remainingQty: c
+    lots: usedLots,
+    deductedQty: totalDeducted,
+    remainingQty
   };
 }
-async function Se(r, t, e, a = [], s = !0, c) {
-  const o = await me(r, t, e), u = {
-    success: !0,
-    productId: r,
-    processCode: t,
-    productionQty: e,
-    allowNegative: s,
+async function deductByBOM(productId, processCode, productionQty, inputMaterials = [], allowNegative = true, productionLotId) {
+  const requirements = await calculateRequiredMaterials(productId, processCode, productionQty);
+  const result = {
+    success: true,
+    productId,
+    processCode,
+    productionQty,
+    allowNegative,
     items: [],
     totalRequired: 0,
     totalDeducted: 0,
     errors: []
   };
-  if (o.length === 0)
-    return u;
-  const d = /* @__PURE__ */ new Map();
-  for (const l of a) {
-    const y = d.get(l.materialId) || [];
-    y.push(l), d.set(l.materialId, y);
+  if (requirements.length === 0) {
+    return result;
   }
-  for (const l of o) {
-    u.totalRequired += l.requiredQty;
-    const y = {
-      materialId: l.materialId,
-      materialCode: l.materialCode,
-      materialName: l.materialName,
-      requiredQty: l.requiredQty,
+  const inputMap = /* @__PURE__ */ new Map();
+  for (const input of inputMaterials) {
+    const existing = inputMap.get(input.materialId) || [];
+    existing.push(input);
+    inputMap.set(input.materialId, existing);
+  }
+  for (const req of requirements) {
+    result.totalRequired += req.requiredQty;
+    const item = {
+      materialId: req.materialId,
+      materialCode: req.materialCode,
+      materialName: req.materialName,
+      requiredQty: req.requiredQty,
       deductedQty: 0,
-      remainingQty: l.requiredQty,
+      remainingQty: req.requiredQty,
       lots: [],
-      success: !1,
-      allowedNegative: !1
+      success: false,
+      allowedNegative: false
     };
     try {
-      const f = d.get(l.materialId);
-      if (f && f.length > 0) {
-        let p = l.requiredQty;
-        for (const m of f) {
-          if (p <= 0) break;
-          if (m.lotNumber) {
-            const S = await n.materialStock.findFirst({
+      const scannedInputs = inputMap.get(req.materialId);
+      if (scannedInputs && scannedInputs.length > 0) {
+        let remaining = req.requiredQty;
+        for (const input of scannedInputs) {
+          if (remaining <= 0) break;
+          if (input.lotNumber) {
+            const stock = await prisma.materialStock.findFirst({
               where: {
-                materialId: l.materialId,
-                lotNumber: m.lotNumber
+                materialId: req.materialId,
+                lotNumber: input.lotNumber
               }
             });
-            if (S) {
-              const N = S.quantity - S.usedQty, g = m.quantity ? Math.min(m.quantity, p) : Math.min(N > 0 ? N : p, p);
-              if (g > N && !s) {
-                y.error = `재고 부족: ${m.lotNumber} (가용: ${N}, 필요: ${g})`;
+            if (stock) {
+              const availableQty = stock.quantity - stock.usedQty;
+              const useQty = input.quantity ? Math.min(input.quantity, remaining) : Math.min(availableQty > 0 ? availableQty : remaining, remaining);
+              if (useQty > availableQty && !allowNegative) {
+                item.error = `재고 부족: ${input.lotNumber} (가용: ${availableQty}, 필요: ${useQty})`;
                 continue;
               }
-              await n.materialStock.update({
-                where: { id: S.id },
-                data: { usedQty: S.usedQty + g }
-              }), c && await n.lotMaterial.create({
-                data: {
-                  productionLotId: c,
-                  materialId: l.materialId,
-                  materialLotNo: m.lotNumber,
-                  quantity: g
-                }
-              }), y.lots.push({ lotNumber: m.lotNumber, usedQty: g }), y.deductedQty += g, p -= g, g > N && (y.allowedNegative = !0);
+              await prisma.materialStock.update({
+                where: { id: stock.id },
+                data: { usedQty: stock.usedQty + useQty }
+              });
+              if (productionLotId) {
+                await prisma.lotMaterial.create({
+                  data: {
+                    productionLotId,
+                    materialId: req.materialId,
+                    materialLotNo: input.lotNumber,
+                    quantity: useQty
+                  }
+                });
+              }
+              item.lots.push({ lotNumber: input.lotNumber, usedQty: useQty });
+              item.deductedQty += useQty;
+              remaining -= useQty;
+              if (useQty > availableQty) {
+                item.allowedNegative = true;
+              }
             }
           }
         }
-        if (p > 0) {
-          const m = await _(
-            l.materialId,
-            p,
-            c,
-            s
+        if (remaining > 0) {
+          const fifoResult = await consumeStockFIFOWithNegative(
+            req.materialId,
+            remaining,
+            productionLotId,
+            allowNegative
           );
-          y.lots.push(...m.lots), y.deductedQty += m.deductedQty, p = m.remainingQty, m.remainingQty === 0 && m.deductedQty < p && (y.allowedNegative = !0);
+          item.lots.push(...fifoResult.lots);
+          item.deductedQty += fifoResult.deductedQty;
+          remaining = fifoResult.remainingQty;
+          if (fifoResult.remainingQty === 0 && fifoResult.deductedQty < remaining) {
+            item.allowedNegative = true;
+          }
         }
-        y.remainingQty = p, y.success = p === 0;
+        item.remainingQty = remaining;
+        item.success = remaining === 0;
       } else {
-        const p = await _(
-          l.materialId,
-          l.requiredQty,
-          c,
-          s
+        const fifoResult = await consumeStockFIFOWithNegative(
+          req.materialId,
+          req.requiredQty,
+          productionLotId,
+          allowNegative
         );
-        y.lots = p.lots, y.deductedQty = p.deductedQty, y.remainingQty = p.remainingQty, y.success = p.remainingQty === 0, await $(l.materialId) < 0 && (y.allowedNegative = !0);
+        item.lots = fifoResult.lots;
+        item.deductedQty = fifoResult.deductedQty;
+        item.remainingQty = fifoResult.remainingQty;
+        item.success = fifoResult.remainingQty === 0;
+        const totalAvailable = await getAvailableQty(req.materialId);
+        if (totalAvailable < 0) {
+          item.allowedNegative = true;
+        }
       }
-      u.totalDeducted += y.deductedQty;
-    } catch (f) {
-      y.error = f instanceof Error ? f.message : "차감 실패", y.success = !1;
+      result.totalDeducted += item.deductedQty;
+    } catch (error) {
+      item.error = error instanceof Error ? error.message : "차감 실패";
+      item.success = false;
     }
-    !y.success && !s && (u.success = !1, u.errors.push(`${l.materialCode}: ${y.error || "차감 실패"}`)), u.items.push(y);
+    if (!item.success && !allowNegative) {
+      result.success = false;
+      result.errors.push(`${req.materialCode}: ${item.error || "차감 실패"}`);
+    }
+    result.items.push(item);
   }
-  return u;
+  return result;
 }
-async function be(r) {
-  return n.material.create({
+async function createMaterial(input) {
+  return prisma.material.create({
     data: {
-      code: r.code,
-      name: r.name,
-      spec: r.spec,
-      category: r.category,
-      unit: r.unit,
-      safeStock: r.safeStock || 0,
-      description: r.description
+      code: input.code,
+      name: input.name,
+      spec: input.spec,
+      category: input.category,
+      unit: input.unit,
+      safeStock: input.safeStock || 0,
+      description: input.description
     }
   });
 }
-async function ve(r) {
-  return n.material.findUnique({
-    where: { id: r },
+async function getMaterialById(id) {
+  return prisma.material.findUnique({
+    where: { id },
     include: {
-      stocks: !0,
+      stocks: true,
       _count: {
         select: {
-          lotMaterials: !0,
-          bomItems: !0
+          lotMaterials: true,
+          bomItems: true
         }
       }
     }
   });
 }
-async function Ne(r, t) {
-  return n.material.update({
-    where: { id: r },
-    data: t
+async function updateMaterial(id, input) {
+  return prisma.material.update({
+    where: { id },
+    data: input
   });
 }
-async function ke(r) {
-  await n.material.update({
-    where: { id: r },
-    data: { isActive: !1 }
+async function deleteMaterial(id) {
+  await prisma.material.update({
+    where: { id },
+    data: { isActive: false }
   });
 }
-async function Le(r) {
-  const { category: t, isActive: e = !0, search: a } = {}, s = {};
-  return e !== void 0 && (s.isActive = e), t && (s.category = t), a && (s.OR = [
-    { code: { contains: a, mode: "insensitive" } },
-    { name: { contains: a, mode: "insensitive" } }
-  ]), n.material.findMany({
-    where: s,
+async function getAllMaterials(options) {
+  const { category, isActive = true, search } = {};
+  const where = {};
+  if (isActive !== void 0) {
+    where.isActive = isActive;
+  }
+  if (category) {
+    where.category = category;
+  }
+  if (search) {
+    where.OR = [
+      { code: { contains: search, mode: "insensitive" } },
+      { name: { contains: search, mode: "insensitive" } }
+    ];
+  }
+  return prisma.material.findMany({
+    where,
     include: {
       _count: {
         select: {
-          stocks: !0,
-          lotMaterials: !0
+          stocks: true,
+          lotMaterials: true
         }
       }
     },
     orderBy: { code: "asc" }
   });
 }
-async function I(r, t = 10) {
-  const e = await n.lotMaterial.findMany({
-    where: { materialLotNo: r },
+async function traceForward(materialLotNo, maxDepth = 10) {
+  const directLots = await prisma.lotMaterial.findMany({
+    where: { materialLotNo },
     include: {
       productionLot: {
         include: {
-          product: !0,
+          product: true,
           childLots: {
             include: {
-              product: !0
+              product: true
             }
           }
         }
       },
-      material: !0
+      material: true
     }
   });
-  if (e.length === 0) {
-    const u = await n.material.findFirst({
+  if (directLots.length === 0) {
+    const material = await prisma.material.findFirst({
       where: {
         OR: [
-          { code: r },
-          { stocks: { some: { lotNumber: r } } }
+          { code: materialLotNo },
+          { stocks: { some: { lotNumber: materialLotNo } } }
         ]
       }
     });
+    const rootNode2 = {
+      id: 0,
+      lotNumber: materialLotNo,
+      processCode: "MATERIAL",
+      type: "MATERIAL_LOT",
+      materialCode: material?.code,
+      materialName: material?.name,
+      quantity: 0,
+      status: "NOT_FOUND",
+      date: /* @__PURE__ */ new Date(),
+      depth: 0,
+      children: []
+    };
     return {
-      rootNode: {
-        id: 0,
-        lotNumber: r,
-        processCode: "MATERIAL",
-        type: "MATERIAL_LOT",
-        materialCode: u?.code,
-        materialName: u?.name,
-        quantity: 0,
-        status: "NOT_FOUND",
-        date: /* @__PURE__ */ new Date(),
-        depth: 0,
-        children: []
-      },
+      rootNode: rootNode2,
       totalNodes: 1,
       maxDepth: 0,
       direction: "FORWARD",
       tracedAt: /* @__PURE__ */ new Date()
     };
   }
-  const a = e[0], s = {
+  const firstLot = directLots[0];
+  const rootNode = {
     id: 0,
-    lotNumber: r,
+    lotNumber: materialLotNo,
     processCode: "MATERIAL",
     type: "MATERIAL_LOT",
-    materialCode: a.material.code,
-    materialName: a.material.name,
-    quantity: e.reduce((u, d) => u + d.quantity, 0),
+    materialCode: firstLot.material.code,
+    materialName: firstLot.material.name,
+    quantity: directLots.reduce((sum, l) => sum + l.quantity, 0),
     status: "TRACED",
-    date: a.createdAt,
+    date: firstLot.createdAt,
     depth: 0,
     children: []
   };
-  let c = 1, o = 0;
-  for (const u of e) {
-    const d = u.productionLot, l = await x(d, 1, t);
-    s.children.push(l.node), c += l.count, o = Math.max(o, l.depth);
+  let nodeCount = 1;
+  let actualMaxDepth = 0;
+  for (const lotMaterial of directLots) {
+    const prodLot = lotMaterial.productionLot;
+    const childNode = await buildForwardTree(prodLot, 1, maxDepth);
+    rootNode.children.push(childNode.node);
+    nodeCount += childNode.count;
+    actualMaxDepth = Math.max(actualMaxDepth, childNode.depth);
   }
   return {
-    rootNode: s,
-    totalNodes: c,
-    maxDepth: o,
+    rootNode,
+    totalNodes: nodeCount,
+    maxDepth: actualMaxDepth,
     direction: "FORWARD",
     tracedAt: /* @__PURE__ */ new Date()
   };
 }
-async function x(r, t, e) {
-  const a = {
-    id: r.id,
-    lotNumber: r.lotNumber,
-    processCode: r.processCode,
+async function buildForwardTree(lot, currentDepth, maxDepth) {
+  const node = {
+    id: lot.id,
+    lotNumber: lot.lotNumber,
+    processCode: lot.processCode,
     type: "PRODUCTION_LOT",
-    productCode: r.product?.code,
-    productName: r.product?.name,
-    quantity: r.completedQty,
-    status: r.status,
-    date: r.startedAt,
-    depth: t,
+    productCode: lot.product?.code,
+    productName: lot.product?.name,
+    quantity: lot.completedQty,
+    status: lot.status,
+    date: lot.startedAt,
+    depth: currentDepth,
     children: []
   };
-  let s = 1, c = t;
-  if (t >= e)
-    return { node: a, count: s, depth: c };
-  const o = await n.productionLot.findMany({
-    where: { parentLotId: r.id },
+  let count = 1;
+  let depth = currentDepth;
+  if (currentDepth >= maxDepth) {
+    return { node, count, depth };
+  }
+  const childLots = await prisma.productionLot.findMany({
+    where: { parentLotId: lot.id },
     include: {
-      product: !0,
-      childLots: !0
+      product: true,
+      childLots: true
     }
   });
-  for (const u of o) {
-    const d = await x(
-      u,
-      t + 1,
-      e
+  for (const childLot of childLots) {
+    const result = await buildForwardTree(
+      childLot,
+      currentDepth + 1,
+      maxDepth
     );
-    a.children.push(d.node), s += d.count, c = Math.max(c, d.depth);
+    node.children.push(result.node);
+    count += result.count;
+    depth = Math.max(depth, result.depth);
   }
-  return { node: a, count: s, depth: c };
+  return { node, count, depth };
 }
-async function Q(r, t = 10) {
-  const e = await n.productionLot.findUnique({
-    where: { lotNumber: r },
+async function traceBackward(lotNumber, maxDepth = 10) {
+  const productionLot = await prisma.productionLot.findUnique({
+    where: { lotNumber },
     include: {
-      product: !0,
+      product: true,
       lotMaterials: {
-        include: { material: !0 }
+        include: { material: true }
       },
       parentLot: {
         include: {
-          product: !0,
+          product: true,
           lotMaterials: {
-            include: { material: !0 }
+            include: { material: true }
           }
         }
       }
     }
   });
-  if (!e)
+  if (!productionLot) {
+    const rootNode2 = {
+      id: 0,
+      lotNumber,
+      processCode: "UNKNOWN",
+      type: "PRODUCTION_LOT",
+      quantity: 0,
+      status: "NOT_FOUND",
+      date: /* @__PURE__ */ new Date(),
+      depth: 0,
+      children: []
+    };
     return {
-      rootNode: {
-        id: 0,
-        lotNumber: r,
-        processCode: "UNKNOWN",
-        type: "PRODUCTION_LOT",
-        quantity: 0,
-        status: "NOT_FOUND",
-        date: /* @__PURE__ */ new Date(),
-        depth: 0,
-        children: []
-      },
+      rootNode: rootNode2,
       totalNodes: 1,
       maxDepth: 0,
       direction: "BACKWARD",
       tracedAt: /* @__PURE__ */ new Date()
     };
-  const a = {
-    id: e.id,
-    lotNumber: e.lotNumber,
-    processCode: e.processCode,
+  }
+  const rootNode = {
+    id: productionLot.id,
+    lotNumber: productionLot.lotNumber,
+    processCode: productionLot.processCode,
     type: "PRODUCTION_LOT",
-    productCode: e.product?.code,
-    productName: e.product?.name,
-    quantity: e.completedQty,
-    status: e.status,
-    date: e.startedAt,
+    productCode: productionLot.product?.code,
+    productName: productionLot.product?.name,
+    quantity: productionLot.completedQty,
+    status: productionLot.status,
+    date: productionLot.startedAt,
     depth: 0,
     children: []
-  }, s = await V(
-    e,
-    a,
+  };
+  const result = await buildBackwardTree(
+    productionLot,
+    rootNode,
     1,
-    t
+    maxDepth
   );
   return {
-    rootNode: a,
-    totalNodes: s.count + 1,
-    maxDepth: s.depth,
+    rootNode,
+    totalNodes: result.count + 1,
+    maxDepth: result.depth,
     direction: "BACKWARD",
     tracedAt: /* @__PURE__ */ new Date()
   };
 }
-async function V(r, t, e, a) {
-  let s = 0, c = e;
-  if (e > a)
-    return { count: s, depth: e - 1 };
-  for (const o of r.lotMaterials) {
-    const u = {
-      id: o.id,
-      lotNumber: o.materialLotNo,
+async function buildBackwardTree(lot, node, currentDepth, maxDepth) {
+  let count = 0;
+  let depth = currentDepth;
+  if (currentDepth > maxDepth) {
+    return { count, depth: currentDepth - 1 };
+  }
+  for (const lotMaterial of lot.lotMaterials) {
+    const materialNode = {
+      id: lotMaterial.id,
+      lotNumber: lotMaterial.materialLotNo,
       processCode: "MATERIAL",
       type: "MATERIAL_LOT",
-      materialCode: o.material.code,
-      materialName: o.material.name,
-      quantity: o.quantity,
+      materialCode: lotMaterial.material.code,
+      materialName: lotMaterial.material.name,
+      quantity: lotMaterial.quantity,
       status: "USED",
-      date: o.createdAt,
-      depth: e,
+      date: lotMaterial.createdAt,
+      depth: currentDepth,
       children: []
     };
-    t.children.push(u), s++;
+    node.children.push(materialNode);
+    count++;
   }
-  if (r.parentLotId) {
-    const o = await n.productionLot.findUnique({
-      where: { id: r.parentLotId },
+  if (lot.parentLotId) {
+    const parentLot = await prisma.productionLot.findUnique({
+      where: { id: lot.parentLotId },
       include: {
-        product: !0,
+        product: true,
         lotMaterials: {
-          include: { material: !0 }
+          include: { material: true }
         }
       }
     });
-    if (o) {
-      const u = {
-        id: o.id,
-        lotNumber: o.lotNumber,
-        processCode: o.processCode,
+    if (parentLot) {
+      const parentNode = {
+        id: parentLot.id,
+        lotNumber: parentLot.lotNumber,
+        processCode: parentLot.processCode,
         type: "PRODUCTION_LOT",
-        productCode: o.product?.code,
-        productName: o.product?.name,
-        quantity: o.completedQty,
-        status: o.status,
-        date: o.startedAt,
-        depth: e,
+        productCode: parentLot.product?.code,
+        productName: parentLot.product?.name,
+        quantity: parentLot.completedQty,
+        status: parentLot.status,
+        date: parentLot.startedAt,
+        depth: currentDepth,
         children: []
       };
-      t.children.push(u), s++;
-      const d = await V(
-        o,
-        u,
-        e + 1,
-        a
+      node.children.push(parentNode);
+      count++;
+      const result = await buildBackwardTree(
+        parentLot,
+        parentNode,
+        currentDepth + 1,
+        maxDepth
       );
-      s += d.count, c = Math.max(c, d.depth);
+      count += result.count;
+      depth = Math.max(depth, result.depth);
     }
   }
-  return { count: s, depth: c };
+  return { count, depth };
 }
-async function Ie(r, t, e = 10) {
-  if (t === "BOTH") {
-    const [a, s] = await Promise.all([
-      I(r, e),
-      Q(r, e)
+async function buildTraceTree(lotNumber, direction, maxDepth = 10) {
+  if (direction === "BOTH") {
+    const [forward, backward] = await Promise.all([
+      traceForward(lotNumber, maxDepth),
+      traceBackward(lotNumber, maxDepth)
     ]);
-    return { forward: a, backward: s };
+    return { forward, backward };
   }
-  return t === "FORWARD" ? I(r, e) : Q(r, e);
+  if (direction === "FORWARD") {
+    return traceForward(lotNumber, maxDepth);
+  }
+  return traceBackward(lotNumber, maxDepth);
 }
-async function Qe(r) {
-  const { lotId: t, type: e, result: a, defectReason: s, defectQty: c = 0, inspectorId: o } = r, u = await n.inspection.create({
+async function createInspection(input) {
+  const { lotId, type, result, defectReason, defectQty = 0, inspectorId } = input;
+  const inspection = await prisma.inspection.create({
     data: {
-      productionLotId: t,
-      type: e,
-      result: a,
-      defectReason: s,
-      defectQty: c,
-      inspectorId: o,
+      productionLotId: lotId,
+      type,
+      result,
+      defectReason,
+      defectQty,
+      inspectorId,
       inspectedAt: /* @__PURE__ */ new Date()
     },
     include: {
       productionLot: {
         select: {
-          id: !0,
-          lotNumber: !0,
-          processCode: !0,
+          id: true,
+          lotNumber: true,
+          processCode: true,
           product: {
-            select: { code: !0, name: !0 }
+            select: { code: true, name: true }
           }
         }
       },
       inspector: {
-        select: { id: !0, name: !0 }
+        select: { id: true, name: true }
       }
     }
   });
-  return a === "FAIL" && c > 0 && await n.productionLot.update({
-    where: { id: t },
-    data: {
-      defectQty: {
-        increment: c
+  if (result === "FAIL" && defectQty > 0) {
+    await prisma.productionLot.update({
+      where: { id: lotId },
+      data: {
+        defectQty: {
+          increment: defectQty
+        }
       }
-    }
-  }), u;
+    });
+  }
+  return inspection;
 }
-async function Ae(r) {
-  return n.inspection.findMany({
-    where: { productionLotId: r },
+async function getInspectionsByLot(lotId) {
+  return prisma.inspection.findMany({
+    where: { productionLotId: lotId },
     include: {
       productionLot: {
         select: {
-          id: !0,
-          lotNumber: !0,
-          processCode: !0,
+          id: true,
+          lotNumber: true,
+          processCode: true,
           product: {
-            select: { code: !0, name: !0 }
+            select: { code: true, name: true }
           }
         }
       },
       inspector: {
-        select: { id: !0, name: !0 }
+        select: { id: true, name: true }
       }
     },
     orderBy: { inspectedAt: "desc" }
   });
 }
-async function W(r) {
-  const { processCode: t, isActive: e = !0 } = r || {}, a = {};
-  return e !== void 0 && (a.isActive = e), t && (a.processCode = t.toUpperCase()), n.line.findMany({
-    where: a,
+async function getAllLines(options) {
+  const { processCode, isActive = true } = options || {};
+  const where = {};
+  if (isActive !== void 0) {
+    where.isActive = isActive;
+  }
+  if (processCode) {
+    where.processCode = processCode.toUpperCase();
+  }
+  return prisma.line.findMany({
+    where,
     orderBy: [
       { processCode: "asc" },
       { code: "asc" }
     ]
   });
 }
-async function qe(r) {
-  return W({ processCode: r });
+async function getLinesByProcess(processCode) {
+  return getAllLines({ processCode });
 }
-async function Me(r) {
-  const { processCode: t, productId: e, productCode: a, setQuantity: s } = r, c = await M(t), o = R(a, s, c.sequence), u = await n.bundleLot.create({
+async function createBundle(input) {
+  const { processCode, productId, productCode, setQuantity } = input;
+  const sequence = await getNextBundleSequence(processCode);
+  const bundleNo = generateBundleBarcode(productCode, setQuantity, sequence.sequence);
+  const bundleLot = await prisma.bundleLot.create({
     data: {
-      bundleNo: o,
-      productId: e,
-      setQuantity: s,
+      bundleNo,
+      productId,
+      setQuantity,
       totalQty: 0,
       status: "CREATED"
     },
     include: {
       product: {
-        select: { code: !0, name: !0 }
+        select: { code: true, name: true }
       },
       items: {
         include: {
           productionLot: {
-            select: { lotNumber: !0, processCode: !0 }
+            select: { lotNumber: true, processCode: true }
           }
         }
       }
     }
   });
   return {
-    id: u.id,
-    bundleNo: u.bundleNo,
-    productId: u.productId,
-    productCode: u.product.code,
-    productName: u.product.name,
-    bundleType: u.bundleType,
-    setQuantity: u.setQuantity,
-    totalQty: u.totalQty,
-    status: u.status,
+    id: bundleLot.id,
+    bundleNo: bundleLot.bundleNo,
+    productId: bundleLot.productId,
+    productCode: bundleLot.product.code,
+    productName: bundleLot.product.name,
+    bundleType: bundleLot.bundleType,
+    setQuantity: bundleLot.setQuantity,
+    totalQty: bundleLot.totalQty,
+    status: bundleLot.status,
     items: [],
-    createdAt: u.createdAt
+    createdAt: bundleLot.createdAt
   };
 }
-async function Ce(r) {
-  const { bundleLotId: t, productionLotId: e, quantity: a } = r, s = await n.bundleLot.findUnique({
-    where: { id: t }
+async function addToBundle(input) {
+  const { bundleLotId, productionLotId, quantity } = input;
+  const bundle = await prisma.bundleLot.findUnique({
+    where: { id: bundleLotId }
   });
-  if (!s)
+  if (!bundle) {
     throw new Error("번들 LOT를 찾을 수 없습니다.");
-  if (s.status !== "CREATED")
+  }
+  if (bundle.status !== "CREATED") {
     throw new Error("이미 완료된 번들에는 추가할 수 없습니다.");
-  return await n.bundleItem.create({
+  }
+  await prisma.bundleItem.create({
     data: {
-      bundleLotId: t,
-      productionLotId: e,
-      quantity: a
+      bundleLotId,
+      productionLotId,
+      quantity
     }
-  }), await n.bundleLot.update({
-    where: { id: t },
-    data: {
-      totalQty: { increment: a }
-    }
-  }), v(t);
-}
-async function Be(r) {
-  const t = await n.bundleItem.findUnique({
-    where: { id: r },
-    include: { bundleLot: !0 }
   });
-  if (!t)
+  await prisma.bundleLot.update({
+    where: { id: bundleLotId },
+    data: {
+      totalQty: { increment: quantity }
+    }
+  });
+  return getBundleById(bundleLotId);
+}
+async function removeFromBundle(bundleItemId) {
+  const item = await prisma.bundleItem.findUnique({
+    where: { id: bundleItemId },
+    include: { bundleLot: true }
+  });
+  if (!item) {
     throw new Error("번들 아이템을 찾을 수 없습니다.");
-  if (t.bundleLot.status !== "CREATED")
+  }
+  if (item.bundleLot.status !== "CREATED") {
     throw new Error("이미 완료된 번들에서는 제거할 수 없습니다.");
-  return await n.bundleItem.delete({
-    where: { id: r }
-  }), await n.bundleLot.update({
-    where: { id: t.bundleLotId },
-    data: {
-      totalQty: { decrement: t.quantity }
-    }
-  }), v(t.bundleLotId);
-}
-async function _e(r) {
-  const t = await n.bundleLot.findUnique({
-    where: { id: r },
-    include: { items: !0 }
+  }
+  await prisma.bundleItem.delete({
+    where: { id: bundleItemId }
   });
-  if (!t)
-    throw new Error("번들 LOT를 찾을 수 없습니다.");
-  if (t.items.length === 0)
-    throw new Error("번들에 추가된 LOT가 없습니다.");
-  if (t.items.length !== t.setQuantity)
-    throw new Error(`번들 수량이 일치하지 않습니다. (예상: ${t.setQuantity}, 실제: ${t.items.length})`);
-  return await n.bundleLot.update({
-    where: { id: r },
-    data: { status: "SHIPPED" }
-  }), v(r);
+  await prisma.bundleLot.update({
+    where: { id: item.bundleLotId },
+    data: {
+      totalQty: { decrement: item.quantity }
+    }
+  });
+  return getBundleById(item.bundleLotId);
 }
-async function Pe(r) {
-  if (!await n.bundleLot.findUnique({
-    where: { id: r }
-  }))
+async function completeBundle(bundleLotId) {
+  const bundle = await prisma.bundleLot.findUnique({
+    where: { id: bundleLotId },
+    include: { items: true }
+  });
+  if (!bundle) {
     throw new Error("번들 LOT를 찾을 수 없습니다.");
-  await n.bundleItem.deleteMany({
-    where: { bundleLotId: r }
-  }), await n.bundleLot.update({
-    where: { id: r },
+  }
+  if (bundle.items.length === 0) {
+    throw new Error("번들에 추가된 LOT가 없습니다.");
+  }
+  if (bundle.items.length !== bundle.setQuantity) {
+    throw new Error(`번들 수량이 일치하지 않습니다. (예상: ${bundle.setQuantity}, 실제: ${bundle.items.length})`);
+  }
+  await prisma.bundleLot.update({
+    where: { id: bundleLotId },
+    data: { status: "SHIPPED" }
+  });
+  return getBundleById(bundleLotId);
+}
+async function unbundle(bundleLotId) {
+  const bundle = await prisma.bundleLot.findUnique({
+    where: { id: bundleLotId }
+  });
+  if (!bundle) {
+    throw new Error("번들 LOT를 찾을 수 없습니다.");
+  }
+  await prisma.bundleItem.deleteMany({
+    where: { bundleLotId }
+  });
+  await prisma.bundleLot.update({
+    where: { id: bundleLotId },
     data: {
       status: "UNBUNDLED",
       totalQty: 0
     }
   });
 }
-async function Te(r) {
-  await n.bundleLot.delete({
-    where: { id: r }
+async function deleteBundle(bundleLotId) {
+  await prisma.bundleLot.delete({
+    where: { id: bundleLotId }
   });
 }
-async function v(r) {
-  const t = await n.bundleLot.findUnique({
-    where: { id: r },
+async function getBundleById(bundleLotId) {
+  const bundle = await prisma.bundleLot.findUnique({
+    where: { id: bundleLotId },
     include: {
       product: {
-        select: { code: !0, name: !0 }
+        select: { code: true, name: true }
       },
       items: {
         include: {
           productionLot: {
-            select: { lotNumber: !0, processCode: !0 }
+            select: { lotNumber: true, processCode: true }
           }
         },
         orderBy: { createdAt: "asc" }
       }
     }
   });
-  return t ? {
-    id: t.id,
-    bundleNo: t.bundleNo,
-    productId: t.productId,
-    productCode: t.product.code,
-    productName: t.product.name,
-    bundleType: t.bundleType,
-    setQuantity: t.setQuantity,
-    totalQty: t.totalQty,
-    status: t.status,
-    items: t.items.map((e) => ({
-      id: e.id,
-      productionLotId: e.productionLotId,
-      lotNumber: e.productionLot.lotNumber,
-      quantity: e.quantity,
-      processCode: e.productionLot.processCode,
-      createdAt: e.createdAt
+  if (!bundle) return null;
+  return {
+    id: bundle.id,
+    bundleNo: bundle.bundleNo,
+    productId: bundle.productId,
+    productCode: bundle.product.code,
+    productName: bundle.product.name,
+    bundleType: bundle.bundleType,
+    setQuantity: bundle.setQuantity,
+    totalQty: bundle.totalQty,
+    status: bundle.status,
+    items: bundle.items.map((item) => ({
+      id: item.id,
+      productionLotId: item.productionLotId,
+      lotNumber: item.productionLot.lotNumber,
+      quantity: item.quantity,
+      processCode: item.productionLot.processCode,
+      createdAt: item.createdAt
     })),
-    createdAt: t.createdAt
-  } : null;
+    createdAt: bundle.createdAt
+  };
 }
-async function Ee(r) {
-  const t = await n.bundleLot.findUnique({
-    where: { bundleNo: r }
+async function getBundleByNo(bundleNo) {
+  const bundle = await prisma.bundleLot.findUnique({
+    where: { bundleNo }
   });
-  return t ? v(t.id) : null;
+  if (!bundle) return null;
+  return getBundleById(bundle.id);
 }
-async function De() {
-  return (await n.bundleLot.findMany({
+async function getActiveBundles() {
+  const bundles = await prisma.bundleLot.findMany({
     where: { status: "CREATED" },
     include: {
       product: {
-        select: { code: !0, name: !0 }
+        select: { code: true, name: true }
       },
       items: {
         include: {
           productionLot: {
-            select: { lotNumber: !0, processCode: !0 }
+            select: { lotNumber: true, processCode: true }
           }
         }
       }
     },
     orderBy: { createdAt: "desc" }
-  })).map((t) => ({
-    id: t.id,
-    bundleNo: t.bundleNo,
-    productId: t.productId,
-    productCode: t.product.code,
-    productName: t.product.name,
-    bundleType: t.bundleType,
-    setQuantity: t.setQuantity,
-    totalQty: t.totalQty,
-    status: t.status,
-    items: t.items.map((e) => ({
-      id: e.id,
-      productionLotId: e.productionLotId,
-      lotNumber: e.productionLot.lotNumber,
-      quantity: e.quantity,
-      processCode: e.productionLot.processCode,
-      createdAt: e.createdAt
+  });
+  return bundles.map((bundle) => ({
+    id: bundle.id,
+    bundleNo: bundle.bundleNo,
+    productId: bundle.productId,
+    productCode: bundle.product.code,
+    productName: bundle.product.name,
+    bundleType: bundle.bundleType,
+    setQuantity: bundle.setQuantity,
+    totalQty: bundle.totalQty,
+    status: bundle.status,
+    items: bundle.items.map((item) => ({
+      id: item.id,
+      productionLotId: item.productionLotId,
+      lotNumber: item.productionLot.lotNumber,
+      quantity: item.quantity,
+      processCode: item.productionLot.processCode,
+      createdAt: item.createdAt
     })),
-    createdAt: t.createdAt
+    createdAt: bundle.createdAt
   }));
 }
-async function Oe(r) {
-  const e = (await n.bundleItem.findMany({
-    select: { productionLotId: !0 }
-  })).map((s) => s.productionLotId);
-  return await n.productionLot.findMany({
+async function getAvailableLotsForBundle(productId) {
+  const bundledLotIds = await prisma.bundleItem.findMany({
+    select: { productionLotId: true }
+  });
+  const excludeIds = bundledLotIds.map((b) => b.productionLotId);
+  const lots = await prisma.productionLot.findMany({
     where: {
-      productId: r,
+      productId,
       processCode: "CA",
       status: "COMPLETED",
-      id: { notIn: e }
+      id: { notIn: excludeIds }
     },
     select: {
-      id: !0,
-      lotNumber: !0,
-      processCode: !0,
-      completedQty: !0,
-      completedAt: !0
+      id: true,
+      lotNumber: true,
+      processCode: true,
+      completedQty: true,
+      completedAt: true
     },
     orderBy: { completedAt: "desc" },
     take: 50
   });
+  return lots;
 }
-async function Re(r) {
-  const t = await n.bundleLot.findUnique({
-    where: { id: r },
+async function shipEntireBundle(bundleId) {
+  const bundle = await prisma.bundleLot.findUnique({
+    where: { id: bundleId },
     include: {
       items: {
         include: {
           productionLot: {
-            select: { lotNumber: !0 }
+            select: { lotNumber: true }
           }
         }
       }
     }
   });
-  if (!t)
+  if (!bundle) {
     throw new Error("번들 LOT를 찾을 수 없습니다.");
-  if (t.items.length === 0)
+  }
+  if (bundle.items.length === 0) {
     throw new Error("번들에 출하할 아이템이 없습니다.");
-  if (t.status === "SHIPPED")
+  }
+  if (bundle.status === "SHIPPED") {
     throw new Error("이미 출하 완료된 번들입니다.");
-  await n.bundleLot.update({
-    where: { id: r },
+  }
+  await prisma.bundleLot.update({
+    where: { id: bundleId },
     data: { status: "SHIPPED" }
   });
-  const e = t.items.map((s) => s.productionLot.lotNumber), a = t.items.map((s) => s.id);
+  const shippedLotNumbers = bundle.items.map((i) => i.productionLot.lotNumber);
+  const shippedItemIds = bundle.items.map((i) => i.id);
   return {
-    success: !0,
-    bundleId: r,
-    bundleNo: t.bundleNo,
-    shippedItemIds: a,
-    shippedLotNumbers: e,
+    success: true,
+    bundleId,
+    bundleNo: bundle.bundleNo,
+    shippedItemIds,
+    shippedLotNumbers,
     newBundleStatus: "SHIPPED",
-    message: `번들 전체 출하 완료 (${e.length}개 아이템)`
+    message: `번들 전체 출하 완료 (${shippedLotNumbers.length}개 아이템)`
   };
 }
-async function Ue(r) {
-  if (r.length === 0)
+async function createSetBundle(items) {
+  if (items.length === 0) {
     throw new Error("번들에 추가할 아이템이 없습니다.");
-  const t = r.map((m) => m.lotId), e = await n.productionLot.findMany({
-    where: { id: { in: t } },
+  }
+  const lotIds = items.map((i) => i.lotId);
+  const lots = await prisma.productionLot.findMany({
+    where: { id: { in: lotIds } },
     include: {
       product: {
-        select: { id: !0, code: !0, name: !0 }
+        select: { id: true, code: true, name: true }
       }
     }
   });
-  if (e.length !== r.length)
+  if (lots.length !== items.length) {
     throw new Error("일부 LOT를 찾을 수 없습니다.");
-  const s = new Set(e.map((m) => m.productId)).size === 1 ? "SAME_PRODUCT" : "MULTI_PRODUCT", c = e[0], o = c.processCode, u = c.product.code, d = await M(o), l = r.length, y = R(
-    s === "MULTI_PRODUCT" ? "SET" : u,
-    l,
-    d.sequence
-  ), f = r.reduce((m, S) => m + S.quantity, 0), p = await n.bundleLot.create({
+  }
+  const uniqueProductIds = new Set(lots.map((lot) => lot.productId));
+  const bundleType = uniqueProductIds.size === 1 ? "SAME_PRODUCT" : "MULTI_PRODUCT";
+  const firstLot = lots[0];
+  const processCode = firstLot.processCode;
+  const productCode = firstLot.product.code;
+  const sequence = await getNextBundleSequence(processCode);
+  const setQuantity = items.length;
+  const bundleNo = generateBundleBarcode(
+    bundleType === "MULTI_PRODUCT" ? "SET" : productCode,
+    setQuantity,
+    sequence.sequence
+  );
+  const totalQty = items.reduce((sum, item) => sum + item.quantity, 0);
+  const bundle = await prisma.bundleLot.create({
     data: {
-      bundleNo: y,
-      productId: c.productId,
-      bundleType: s,
-      setQuantity: l,
-      totalQty: f,
+      bundleNo,
+      productId: firstLot.productId,
+      bundleType,
+      setQuantity,
+      totalQty,
       status: "CREATED"
     }
   });
-  for (const m of r)
-    await n.bundleItem.create({
+  for (const item of items) {
+    await prisma.bundleItem.create({
       data: {
-        bundleLotId: p.id,
-        productionLotId: m.lotId,
-        quantity: m.quantity
+        bundleLotId: bundle.id,
+        productionLotId: item.lotId,
+        quantity: item.quantity
       }
     });
-  return v(p.id);
+  }
+  return getBundleById(bundle.id);
 }
-async function Fe(r) {
-  return n.product.create({
+async function createProduct(input) {
+  return prisma.product.create({
     data: {
-      code: r.code,
-      name: r.name,
-      spec: r.spec,
-      type: r.type || "FINISHED",
-      processCode: r.processCode,
-      crimpCode: r.crimpCode,
-      description: r.description
+      code: input.code,
+      name: input.name,
+      spec: input.spec,
+      type: input.type || "FINISHED",
+      processCode: input.processCode,
+      crimpCode: input.crimpCode,
+      description: input.description
     }
   });
 }
-async function $e(r) {
-  return n.product.findUnique({
-    where: { id: r },
+async function getProductById(id) {
+  return prisma.product.findUnique({
+    where: { id },
     include: {
       _count: {
         select: {
-          boms: !0,
-          productionLots: !0
+          boms: true,
+          productionLots: true
         }
       }
     }
   });
 }
-async function xe(r, t) {
-  return n.product.update({
-    where: { id: r },
-    data: t
+async function updateProduct(id, input) {
+  return prisma.product.update({
+    where: { id },
+    data: input
   });
 }
-async function Ve(r) {
-  await n.product.update({
-    where: { id: r },
-    data: { isActive: !1 }
+async function deleteProduct(id) {
+  await prisma.product.update({
+    where: { id },
+    data: { isActive: false }
   });
 }
-async function We(r) {
-  const { type: t, isActive: e = !0, search: a } = {}, s = {};
-  return e !== void 0 && (s.isActive = e), t && (s.type = t), a && (s.OR = [
-    { code: { contains: a, mode: "insensitive" } },
-    { name: { contains: a, mode: "insensitive" } }
-  ]), n.product.findMany({
-    where: s,
+async function getAllProducts(options) {
+  const { type, isActive = true, search } = {};
+  const where = {};
+  if (isActive !== void 0) {
+    where.isActive = isActive;
+  }
+  if (type) {
+    where.type = type;
+  }
+  if (search) {
+    where.OR = [
+      { code: { contains: search, mode: "insensitive" } },
+      { name: { contains: search, mode: "insensitive" } }
+    ];
+  }
+  return prisma.product.findMany({
+    where,
     include: {
       _count: {
         select: {
-          boms: !0,
-          productionLots: !0
+          boms: true,
+          productionLots: true
         }
       }
     },
     orderBy: { code: "asc" }
   });
 }
-const C = k.dirname(j(import.meta.url));
-process.env.DIST = k.join(C, "../dist");
-process.env.VITE_PUBLIC = b.isPackaged ? process.env.DIST : k.join(C, "../public");
-let h;
-const P = process.env.VITE_DEV_SERVER_URL, He = !b.isPackaged;
-function H() {
-  h = new T({
+const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
+process.env.DIST = path.join(__dirname$1, "../dist");
+process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(__dirname$1, "../public");
+let win;
+const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
+const isDev = !app.isPackaged;
+function createWindow() {
+  win = new BrowserWindow({
     width: 1200,
     height: 800,
     webPreferences: {
-      preload: k.join(C, "preload.js")
+      preload: path.join(__dirname$1, "preload.js")
     }
-  }), h.webContents.on("did-finish-load", () => {
-    h?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
-  }), P ? h.loadURL(P) : He ? h.loadURL("http://localhost:5173") : h.loadFile(k.join(process.env.DIST, "index.html"));
+  });
+  win.webContents.on("did-finish-load", () => {
+    win?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
+  });
+  if (VITE_DEV_SERVER_URL) {
+    win.loadURL(VITE_DEV_SERVER_URL);
+  } else if (isDev) {
+    win.loadURL("http://localhost:5173");
+  } else {
+    win.loadFile(path.join(process.env.DIST, "index.html"));
+  }
 }
-b.on("window-all-closed", () => {
-  process.platform !== "darwin" && b.quit();
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
 });
-b.on("activate", () => {
-  T.getAllWindows().length === 0 && H();
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
 });
-b.whenReady().then(H);
-i.handle("get-printers", async () => {
-  if (!h) return [];
+app.whenReady().then(createWindow);
+ipcMain.handle("get-printers", async () => {
+  if (!win) return [];
   try {
-    return (await h.webContents.getPrintersAsync()).map((t) => ({
-      name: t.name,
-      displayName: t.displayName,
-      description: t.description,
-      status: t.status,
-      isDefault: t.isDefault
+    const printers = await win.webContents.getPrintersAsync();
+    return printers.map((printer) => ({
+      name: printer.name,
+      displayName: printer.displayName,
+      description: printer.description,
+      status: printer.status,
+      isDefault: printer.isDefault
     }));
-  } catch (r) {
-    return console.error("프린터 목록 조회 오류:", r), [];
+  } catch (error) {
+    console.error("프린터 목록 조회 오류:", error);
+    return [];
   }
 });
-i.handle("print-pdf", async (r, t) => {
-  if (!h) return { success: !1, error: "Window not found" };
+ipcMain.handle("print-pdf", async (_event, options) => {
+  if (!win) return { success: false, error: "Window not found" };
   try {
-    const e = {
-      silent: t.silent ?? !0,
-      deviceName: t.printerName,
-      copies: t.copies ?? 1
+    const printOptions = {
+      silent: options.silent ?? true,
+      deviceName: options.printerName,
+      copies: options.copies ?? 1
     };
-    return { success: await h.webContents.print(e) };
-  } catch (e) {
-    return console.error("PDF 인쇄 오류:", e), { success: !1, error: String(e) };
+    const success = await win.webContents.print(printOptions);
+    return { success };
+  } catch (error) {
+    console.error("PDF 인쇄 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("print-to-pdf", async () => {
-  if (!h) return { success: !1, error: "Window not found" };
+ipcMain.handle("print-to-pdf", async () => {
+  if (!win) return { success: false, error: "Window not found" };
   try {
-    const { filePath: r } = await A.showSaveDialog(h, {
+    const { filePath } = await dialog.showSaveDialog(win, {
       defaultPath: "output.pdf",
       filters: [{ name: "PDF", extensions: ["pdf"] }]
     });
-    if (!r)
-      return { success: !1, error: "Cancelled" };
-    const t = await h.webContents.printToPDF({});
-    return E(r, t), { success: !0, filePath: r };
-  } catch (r) {
-    return console.error("PDF 저장 오류:", r), { success: !1, error: String(r) };
+    if (!filePath) {
+      return { success: false, error: "Cancelled" };
+    }
+    const data = await win.webContents.printToPDF({});
+    writeFileSync(filePath, data);
+    return { success: true, filePath };
+  } catch (error) {
+    console.error("PDF 저장 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("print-label", async (r, t) => {
-  if (!h) return { success: !1, error: "Window not found" };
+ipcMain.handle("print-label", async (_event, options) => {
+  if (!win) return { success: false, error: "Window not found" };
   try {
-    if (t.zplData)
-      return console.log("ZPL 라벨 인쇄 요청:", t.printerName), { success: !0, message: "ZPL 인쇄 대기중 (구현 예정)" };
-    if (t.pdfBase64) {
-      const e = {
-        silent: !0,
-        deviceName: t.printerName,
+    if (options.zplData) {
+      console.log("ZPL 라벨 인쇄 요청:", options.printerName);
+      return { success: true, message: "ZPL 인쇄 대기중 (구현 예정)" };
+    }
+    if (options.pdfBase64) {
+      const printOptions = {
+        silent: true,
+        deviceName: options.printerName,
         copies: 1
       };
-      return await h.webContents.print(e), { success: !0 };
+      await win.webContents.print(printOptions);
+      return { success: true };
     }
-    return { success: !1, error: "No print data provided" };
-  } catch (e) {
-    return console.error("라벨 인쇄 오류:", e), { success: !1, error: String(e) };
+    return { success: false, error: "No print data provided" };
+  } catch (error) {
+    console.error("라벨 인쇄 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("save-file-dialog", async (r, t) => h && (await A.showSaveDialog(h, {
-  defaultPath: t.defaultPath,
-  filters: t.filters
-})).filePath || null);
-i.handle("open-file-dialog", async (r, t) => h ? (await A.showOpenDialog(h, {
-  filters: t.filters,
-  properties: t.multiple ? ["openFile", "multiSelections"] : ["openFile"]
-})).filePaths : []);
-i.handle("write-file", async (r, t) => {
+ipcMain.handle("save-file-dialog", async (_event, options) => {
+  if (!win) return null;
+  const result = await dialog.showSaveDialog(win, {
+    defaultPath: options.defaultPath,
+    filters: options.filters
+  });
+  return result.filePath || null;
+});
+ipcMain.handle("open-file-dialog", async (_event, options) => {
+  if (!win) return [];
+  const result = await dialog.showOpenDialog(win, {
+    filters: options.filters,
+    properties: options.multiple ? ["openFile", "multiSelections"] : ["openFile"]
+  });
+  return result.filePaths;
+});
+ipcMain.handle("write-file", async (_event, options) => {
   try {
-    return E(t.filePath, t.data), { success: !0 };
-  } catch (e) {
-    return { success: !1, error: String(e) };
+    writeFileSync(options.filePath, options.data);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: String(error) };
   }
 });
-i.handle("read-file", async (r, t) => {
+ipcMain.handle("read-file", async (_event, filePath) => {
   try {
-    return { success: !0, data: K(t).toString("base64") };
-  } catch (e) {
-    return { success: !1, error: String(e) };
+    const data = readFileSync(filePath);
+    return { success: true, data: data.toString("base64") };
+  } catch (error) {
+    return { success: false, error: String(error) };
   }
 });
-i.handle("production:createLot", async (r, t) => {
+ipcMain.handle("production:createLot", async (_event, input) => {
   try {
-    return { success: !0, data: await J(t) };
-  } catch (e) {
-    return console.error("production:createLot 오류:", e), { success: !1, error: String(e) };
+    const result = await createLot(input);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("production:createLot 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("production:startProduction", async (r, t) => {
+ipcMain.handle("production:startProduction", async (_event, lotId) => {
   try {
-    return { success: !0, data: await ee(t) };
-  } catch (e) {
-    return console.error("production:startProduction 오류:", e), { success: !1, error: String(e) };
+    const result = await startProduction(lotId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("production:startProduction 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("production:completeProduction", async (r, t, e) => {
+ipcMain.handle("production:completeProduction", async (_event, lotId, quantity) => {
   try {
-    return { success: !0, data: await te(t, e) };
-  } catch (a) {
-    return console.error("production:completeProduction 오류:", a), { success: !1, error: String(a) };
+    const result = await completeProduction(lotId, quantity);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("production:completeProduction 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("production:addMaterial", async (r, t, e, a, s) => {
+ipcMain.handle("production:addMaterial", async (_event, lotId, materialId, quantity, lotNumber) => {
   try {
-    return { success: !0, data: await ae(t, e, a, s) };
-  } catch (c) {
-    return console.error("production:addMaterial 오류:", c), { success: !1, error: String(c) };
+    const result = await addMaterial(lotId, materialId, quantity, lotNumber);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("production:addMaterial 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("production:removeMaterial", async (r, t) => {
+ipcMain.handle("production:removeMaterial", async (_event, lotMaterialId) => {
   try {
-    return { success: !0, data: await se(t) };
-  } catch (e) {
-    return console.error("production:removeMaterial 오류:", e), { success: !1, error: String(e) };
+    const result = await removeMaterial(lotMaterialId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("production:removeMaterial 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("production:getLotById", async (r, t) => {
+ipcMain.handle("production:getLotById", async (_event, lotId) => {
   try {
-    return { success: !0, data: await U(t) };
-  } catch (e) {
-    return console.error("production:getLotById 오류:", e), { success: !1, error: String(e) };
+    const result = await getLotById(lotId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("production:getLotById 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("production:getLotByNumber", async (r, t) => {
+ipcMain.handle("production:getLotByNumber", async (_event, lotNumber) => {
   try {
-    return { success: !0, data: await oe(t) };
-  } catch (e) {
-    return console.error("production:getLotByNumber 오류:", e), { success: !1, error: String(e) };
+    const result = await getLotByNumber(lotNumber);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("production:getLotByNumber 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("production:getLotsByProcess", async (r, t) => {
+ipcMain.handle("production:getLotsByProcess", async (_event, processCode) => {
   try {
-    return { success: !0, data: await ce(t) };
-  } catch (e) {
-    return console.error("production:getLotsByProcess 오류:", e), { success: !1, error: String(e) };
+    const result = await getLotsByProcess(processCode);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("production:getLotsByProcess 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("production:getLotsByStatus", async (r, t) => {
+ipcMain.handle("production:getLotsByStatus", async (_event, status) => {
   try {
-    return { success: !0, data: await ne(t) };
-  } catch (e) {
-    return console.error("production:getLotsByStatus 오류:", e), { success: !1, error: String(e) };
+    const result = await getLotsByStatus(status);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("production:getLotsByStatus 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("production:updateLotQuantity", async (r, t, e) => {
+ipcMain.handle("production:updateLotQuantity", async (_event, lotId, quantity) => {
   try {
-    return { success: !0, data: await re(t, e) };
-  } catch (a) {
-    return console.error("production:updateLotQuantity 오류:", a), { success: !1, error: String(a) };
+    const result = await updateLotQuantity(lotId, quantity);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("production:updateLotQuantity 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:receiveStock", async (r, t) => {
+ipcMain.handle("stock:receiveStock", async (_event, input) => {
   try {
-    return { success: !0, data: await pe(t) };
-  } catch (e) {
-    return console.error("stock:receiveStock 오류:", e), { success: !1, error: String(e) };
+    const result = await receiveStock(input);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("stock:receiveStock 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:consumeStock", async (r, t, e, a) => {
+ipcMain.handle("stock:consumeStock", async (_event, stockId, quantity, lotId) => {
   try {
-    return { success: !0, data: await fe(t, e, a) };
-  } catch (s) {
-    return console.error("stock:consumeStock 오류:", s), { success: !1, error: String(s) };
+    const result = await consumeStock(stockId, quantity, lotId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("stock:consumeStock 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:deductByBOM", async (r, t, e, a, s, c, o) => {
+ipcMain.handle("stock:deductByBOM", async (_event, productId, processCode, productionQty, inputMaterials, allowNegative, productionLotId) => {
   try {
-    return { success: !0, data: await Se(t, e, a, s, c, o) };
-  } catch (u) {
-    return console.error("stock:deductByBOM 오류:", u), { success: !1, error: String(u) };
+    const result = await deductByBOM(productId, processCode, productionQty, inputMaterials, allowNegative, productionLotId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("stock:deductByBOM 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:getStockByMaterial", async (r, t) => {
+ipcMain.handle("stock:getStockByMaterial", async (_event, materialId) => {
   try {
-    return { success: !0, data: await he(t) };
-  } catch (e) {
-    return console.error("stock:getStockByMaterial 오류:", e), { success: !1, error: String(e) };
+    const result = await getStockByMaterial(materialId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("stock:getStockByMaterial 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:getStockSummary", async () => {
+ipcMain.handle("stock:getStockSummary", async () => {
   try {
-    return { success: !0, data: await F() };
-  } catch (r) {
-    return console.error("stock:getStockSummary 오류:", r), { success: !1, error: String(r) };
+    const result = await getStockSummary();
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("stock:getStockSummary 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:getLowStock", async () => {
+ipcMain.handle("stock:getLowStock", async () => {
   try {
-    return { success: !0, data: await we() };
-  } catch (r) {
-    return console.error("stock:getLowStock 오류:", r), { success: !1, error: String(r) };
+    const result = await getLowStock();
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("stock:getLowStock 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:getAvailableQty", async (r, t) => {
+ipcMain.handle("stock:getAvailableQty", async (_event, materialId) => {
   try {
-    return { success: !0, data: await $(t) };
-  } catch (e) {
-    return console.error("stock:getAvailableQty 오류:", e), { success: !1, error: String(e) };
+    const result = await getAvailableQty(materialId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("stock:getAvailableQty 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:getTodayReceivings", async () => {
+ipcMain.handle("stock:getTodayReceivings", async () => {
   try {
-    return { success: !0, data: await ge() };
-  } catch (r) {
-    return console.error("stock:getTodayReceivings 오류:", r), { success: !1, error: String(r) };
+    const result = await getTodayReceivings();
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("stock:getTodayReceivings 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:getAllStocks", async (r, t) => {
+ipcMain.handle("stock:getAllStocks", async (_event, options) => {
   try {
-    const e = await Promise.resolve().then(() => w).then((s) => s.prisma.material.findMany({
-      where: t?.materialCode ? { code: { contains: t.materialCode } } : void 0,
+    const materials = await Promise.resolve().then(() => prisma$1).then((m) => m.prisma.material.findMany({
+      where: options?.materialCode ? { code: { contains: options.materialCode } } : void 0,
       include: {
         stocks: {
           orderBy: { receivedAt: "asc" }
         }
       }
-    })), a = [];
-    for (const s of e)
-      for (const c of s.stocks) {
-        const o = c.quantity - c.usedQty;
-        !t?.showZero && o <= 0 || a.push({
-          id: c.id,
-          materialId: c.materialId,
-          materialCode: s.code,
-          materialName: s.name,
-          lotNumber: c.lotNumber,
-          quantity: c.quantity,
-          usedQty: c.usedQty,
-          availableQty: o,
-          processCode: c.location || void 0,
+    }));
+    const allStocks = [];
+    for (const mat of materials) {
+      for (const stock of mat.stocks) {
+        const availableQty = stock.quantity - stock.usedQty;
+        if (!options?.showZero && availableQty <= 0) continue;
+        allStocks.push({
+          id: stock.id,
+          materialId: stock.materialId,
+          materialCode: mat.code,
+          materialName: mat.name,
+          lotNumber: stock.lotNumber,
+          quantity: stock.quantity,
+          usedQty: stock.usedQty,
+          availableQty,
+          processCode: stock.location || void 0,
           // location을 processCode로 활용
-          location: c.location,
-          receivedAt: c.receivedAt
+          location: stock.location,
+          receivedAt: stock.receivedAt
         });
       }
-    return { success: !0, data: a };
-  } catch (e) {
-    return console.error("stock:getAllStocks 오류:", e), { success: !1, error: String(e) };
+    }
+    return { success: true, data: allStocks };
+  } catch (error) {
+    console.error("stock:getAllStocks 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:registerProcessStock", async (r, t) => {
+ipcMain.handle("stock:registerProcessStock", async (_event, input) => {
   try {
-    const { prisma: e } = await Promise.resolve().then(() => w), a = await e.materialStock.findFirst({
+    const { prisma: prisma2 } = await Promise.resolve().then(() => prisma$1);
+    const existing = await prisma2.materialStock.findFirst({
       where: {
-        materialId: t.materialId,
-        lotNumber: t.lotNumber,
-        location: t.processCode
+        materialId: input.materialId,
+        lotNumber: input.lotNumber,
+        location: input.processCode
         // processCode를 location에 저장
       }
     });
-    if (a) {
-      const c = await e.materialStock.update({
-        where: { id: a.id },
-        data: { quantity: a.quantity + t.quantity }
+    if (existing) {
+      const updated = await prisma2.materialStock.update({
+        where: { id: existing.id },
+        data: { quantity: existing.quantity + input.quantity }
       });
       return {
-        success: !0,
+        success: true,
         data: {
-          id: c.id,
-          isNewEntry: !1,
+          id: updated.id,
+          isNewEntry: false,
           stock: {
-            id: c.id,
-            materialId: c.materialId,
-            lotNumber: c.lotNumber,
-            quantity: c.quantity,
-            usedQty: c.usedQty,
-            availableQty: c.quantity - c.usedQty,
-            processCode: c.location
+            id: updated.id,
+            materialId: updated.materialId,
+            lotNumber: updated.lotNumber,
+            quantity: updated.quantity,
+            usedQty: updated.usedQty,
+            availableQty: updated.quantity - updated.usedQty,
+            processCode: updated.location
           }
         }
       };
     }
-    const s = await e.materialStock.create({
+    const stock = await prisma2.materialStock.create({
       data: {
-        materialId: t.materialId,
-        lotNumber: t.lotNumber,
-        quantity: t.quantity,
+        materialId: input.materialId,
+        lotNumber: input.lotNumber,
+        quantity: input.quantity,
         usedQty: 0,
-        location: t.processCode,
+        location: input.processCode,
         // processCode를 location에 저장
         receivedAt: /* @__PURE__ */ new Date()
       }
     });
     return {
-      success: !0,
+      success: true,
       data: {
-        id: s.id,
-        isNewEntry: !0,
+        id: stock.id,
+        isNewEntry: true,
         stock: {
-          id: s.id,
-          materialId: s.materialId,
-          lotNumber: s.lotNumber,
-          quantity: s.quantity,
-          usedQty: s.usedQty,
-          availableQty: s.quantity - s.usedQty,
-          processCode: s.location
+          id: stock.id,
+          materialId: stock.materialId,
+          lotNumber: stock.lotNumber,
+          quantity: stock.quantity,
+          usedQty: stock.usedQty,
+          availableQty: stock.quantity - stock.usedQty,
+          processCode: stock.location
         }
       }
     };
-  } catch (e) {
-    return console.error("stock:registerProcessStock 오류:", e), { success: !1, error: String(e) };
+  } catch (error) {
+    console.error("stock:registerProcessStock 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:getStocksByProcess", async (r, t, e) => {
+ipcMain.handle("stock:getStocksByProcess", async (_event, processCode, options) => {
   try {
-    const { prisma: a } = await Promise.resolve().then(() => w);
-    return { success: !0, data: (await a.materialStock.findMany({
+    const { prisma: prisma2 } = await Promise.resolve().then(() => prisma$1);
+    const stocks = await prisma2.materialStock.findMany({
       where: {
-        location: t,
-        ...e?.materialCode ? {
-          material: { code: { contains: e.materialCode } }
+        location: processCode,
+        ...options?.materialCode ? {
+          material: { code: { contains: options.materialCode } }
         } : {}
       },
       include: {
-        material: { select: { code: !0, name: !0 } }
+        material: { select: { code: true, name: true } }
       },
       orderBy: { receivedAt: "asc" }
-    })).map((o) => ({
-      id: o.id,
-      materialId: o.materialId,
-      materialCode: o.material.code,
-      materialName: o.material.name,
-      lotNumber: o.lotNumber,
-      quantity: o.quantity,
-      usedQty: o.usedQty,
-      availableQty: o.quantity - o.usedQty,
-      processCode: o.location,
-      location: o.location,
-      receivedAt: o.receivedAt
-    })).filter((o) => e?.showZero || o.availableQty > 0) };
-  } catch (a) {
-    return console.error("stock:getStocksByProcess 오류:", a), { success: !1, error: String(a) };
+    });
+    const result = stocks.map((s) => ({
+      id: s.id,
+      materialId: s.materialId,
+      materialCode: s.material.code,
+      materialName: s.material.name,
+      lotNumber: s.lotNumber,
+      quantity: s.quantity,
+      usedQty: s.usedQty,
+      availableQty: s.quantity - s.usedQty,
+      processCode: s.location,
+      location: s.location,
+      receivedAt: s.receivedAt
+    })).filter((s) => options?.showZero || s.availableQty > 0);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("stock:getStocksByProcess 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:checkProcessStockStatus", async (r, t, e) => {
+ipcMain.handle("stock:checkProcessStockStatus", async (_event, processCode, lotNumber) => {
   try {
-    const { prisma: a } = await Promise.resolve().then(() => w), s = await a.materialStock.findFirst({
+    const { prisma: prisma2 } = await Promise.resolve().then(() => prisma$1);
+    const stock = await prisma2.materialStock.findFirst({
       where: {
-        location: t,
-        lotNumber: e
+        location: processCode,
+        lotNumber
       }
     });
-    if (!s)
+    if (!stock) {
       return {
-        success: !0,
+        success: true,
         data: {
-          exists: !1,
-          lotNumber: e,
-          processCode: t,
+          exists: false,
+          lotNumber,
+          processCode,
           quantity: 0,
           usedQty: 0,
           availableQty: 0,
-          isExhausted: !1,
-          canRegister: !0
+          isExhausted: false,
+          canRegister: true
         }
       };
-    const c = s.quantity - s.usedQty, o = c <= 0;
+    }
+    const availableQty = stock.quantity - stock.usedQty;
+    const isExhausted = availableQty <= 0;
     return {
-      success: !0,
+      success: true,
       data: {
-        exists: !0,
-        lotNumber: e,
-        processCode: t,
-        quantity: s.quantity,
-        usedQty: s.usedQty,
-        availableQty: c,
-        isExhausted: o,
-        canRegister: !o
+        exists: true,
+        lotNumber,
+        processCode,
+        quantity: stock.quantity,
+        usedQty: stock.usedQty,
+        availableQty,
+        isExhausted,
+        canRegister: !isExhausted
       }
     };
-  } catch (a) {
-    return console.error("stock:checkProcessStockStatus 오류:", a), { success: !1, error: String(a) };
+  } catch (error) {
+    console.error("stock:checkProcessStockStatus 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:consumeProcessStock", async (r, t, e, a, s, c) => {
+ipcMain.handle("stock:consumeProcessStock", async (_event, processCode, materialId, quantity, productionLotId, allowNegative) => {
   try {
-    const { prisma: o } = await Promise.resolve().then(() => w), u = await o.materialStock.findMany({
+    const { prisma: prisma2 } = await Promise.resolve().then(() => prisma$1);
+    const stocks = await prisma2.materialStock.findMany({
       where: {
-        materialId: e,
-        location: t
+        materialId,
+        location: processCode
       },
       orderBy: { receivedAt: "asc" }
     });
-    let d = a;
-    const l = [];
-    let y = 0;
-    for (const f of u) {
-      if (d <= 0) break;
-      const p = f.quantity - f.usedQty;
-      if (p <= 0) continue;
-      const m = Math.min(p, d);
-      await o.materialStock.update({
-        where: { id: f.id },
-        data: { usedQty: f.usedQty + m }
-      }), s && await o.lotMaterial.create({
-        data: {
-          productionLotId: s,
-          materialId: e,
-          materialLotNo: f.lotNumber,
-          quantity: m
-        }
-      }), l.push({ lotNumber: f.lotNumber, usedQty: m }), y += m, d -= m;
-    }
-    if (d > 0 && c && u.length > 0) {
-      const f = u[u.length - 1];
-      await o.materialStock.update({
-        where: { id: f.id },
-        data: { usedQty: f.usedQty + d }
+    let remainingQty = quantity;
+    const usedLots = [];
+    let totalDeducted = 0;
+    for (const stock of stocks) {
+      if (remainingQty <= 0) break;
+      const availableQty = stock.quantity - stock.usedQty;
+      if (availableQty <= 0) continue;
+      const useQty = Math.min(availableQty, remainingQty);
+      await prisma2.materialStock.update({
+        where: { id: stock.id },
+        data: { usedQty: stock.usedQty + useQty }
       });
-      const p = l.find((m) => m.lotNumber === f.lotNumber);
-      p ? p.usedQty += d : l.push({ lotNumber: f.lotNumber, usedQty: d }), y += d, d = 0;
+      if (productionLotId) {
+        await prisma2.lotMaterial.create({
+          data: {
+            productionLotId,
+            materialId,
+            materialLotNo: stock.lotNumber,
+            quantity: useQty
+          }
+        });
+      }
+      usedLots.push({ lotNumber: stock.lotNumber, usedQty: useQty });
+      totalDeducted += useQty;
+      remainingQty -= useQty;
+    }
+    if (remainingQty > 0 && allowNegative && stocks.length > 0) {
+      const lastStock = stocks[stocks.length - 1];
+      await prisma2.materialStock.update({
+        where: { id: lastStock.id },
+        data: { usedQty: lastStock.usedQty + remainingQty }
+      });
+      const existingLot = usedLots.find((l) => l.lotNumber === lastStock.lotNumber);
+      if (existingLot) {
+        existingLot.usedQty += remainingQty;
+      } else {
+        usedLots.push({ lotNumber: lastStock.lotNumber, usedQty: remainingQty });
+      }
+      totalDeducted += remainingQty;
+      remainingQty = 0;
     }
     return {
-      success: !0,
+      success: true,
       data: {
-        lots: l,
-        deductedQty: y,
-        remainingQty: d
+        lots: usedLots,
+        deductedQty: totalDeducted,
+        remainingQty
       }
     };
-  } catch (o) {
-    return console.error("stock:consumeProcessStock 오류:", o), { success: !1, error: String(o) };
+  } catch (error) {
+    console.error("stock:consumeProcessStock 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:getProcessStockSummary", async (r, t) => {
+ipcMain.handle("stock:getProcessStockSummary", async (_event, processCode) => {
   try {
-    const { prisma: e } = await Promise.resolve().then(() => w), a = await e.materialStock.findMany({
-      where: { location: t }
-    }), s = new Set(a.map((o) => o.materialId));
-    return { success: !0, data: {
-      totalLots: a.length,
-      totalQuantity: a.reduce((o, u) => o + u.quantity, 0),
-      totalUsed: a.reduce((o, u) => o + u.usedQty, 0),
-      totalAvailable: a.reduce((o, u) => o + (u.quantity - u.usedQty), 0),
-      materialCount: s.size
-    } };
-  } catch (e) {
-    return console.error("stock:getProcessStockSummary 오류:", e), { success: !1, error: String(e) };
+    const { prisma: prisma2 } = await Promise.resolve().then(() => prisma$1);
+    const stocks = await prisma2.materialStock.findMany({
+      where: { location: processCode }
+    });
+    const materialIds = new Set(stocks.map((s) => s.materialId));
+    const summary = {
+      totalLots: stocks.length,
+      totalQuantity: stocks.reduce((sum, s) => sum + s.quantity, 0),
+      totalUsed: stocks.reduce((sum, s) => sum + s.usedQty, 0),
+      totalAvailable: stocks.reduce((sum, s) => sum + (s.quantity - s.usedQty), 0),
+      materialCount: materialIds.size
+    };
+    return { success: true, data: summary };
+  } catch (error) {
+    console.error("stock:getProcessStockSummary 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:getProcessAvailableQty", async (r, t, e) => {
+ipcMain.handle("stock:getProcessAvailableQty", async (_event, processCode, materialId) => {
   try {
-    const { prisma: a } = await Promise.resolve().then(() => w), s = await a.materialStock.aggregate({
+    const { prisma: prisma2 } = await Promise.resolve().then(() => prisma$1);
+    const result = await prisma2.materialStock.aggregate({
       where: {
-        materialId: e,
-        location: t
+        materialId,
+        location: processCode
       },
       _sum: {
-        quantity: !0,
-        usedQty: !0
+        quantity: true,
+        usedQty: true
       }
-    }), c = s._sum.quantity || 0, o = s._sum.usedQty || 0;
-    return { success: !0, data: c - o };
-  } catch (a) {
-    return console.error("stock:getProcessAvailableQty 오류:", a), { success: !1, error: String(a) };
+    });
+    const total = result._sum.quantity || 0;
+    const used = result._sum.usedQty || 0;
+    return { success: true, data: total - used };
+  } catch (error) {
+    console.error("stock:getProcessAvailableQty 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:getTodayProcessReceivings", async (r, t) => {
+ipcMain.handle("stock:getTodayProcessReceivings", async (_event, processCode) => {
   try {
-    const { prisma: e } = await Promise.resolve().then(() => w), a = /* @__PURE__ */ new Date();
-    return a.setHours(0, 0, 0, 0), { success: !0, data: (await e.materialStock.findMany({
+    const { prisma: prisma2 } = await Promise.resolve().then(() => prisma$1);
+    const today = /* @__PURE__ */ new Date();
+    today.setHours(0, 0, 0, 0);
+    const receivings = await prisma2.materialStock.findMany({
       where: {
-        receivedAt: { gte: a },
-        ...t ? { location: t } : {}
+        receivedAt: { gte: today },
+        ...processCode ? { location: processCode } : {}
       },
       include: {
-        material: { select: { code: !0, name: !0 } }
+        material: { select: { code: true, name: true } }
       },
       orderBy: { receivedAt: "desc" }
-    })).map((o) => ({
-      id: o.id,
-      processCode: o.location || "",
-      materialCode: o.material.code,
-      materialName: o.material.name,
-      lotNumber: o.lotNumber,
-      quantity: o.quantity,
-      receivedAt: o.receivedAt
-    })) };
-  } catch (e) {
-    return console.error("stock:getTodayProcessReceivings 오류:", e), { success: !1, error: String(e) };
+    });
+    const result = receivings.map((r) => ({
+      id: r.id,
+      processCode: r.location || "",
+      materialCode: r.material.code,
+      materialName: r.material.name,
+      lotNumber: r.lotNumber,
+      quantity: r.quantity,
+      receivedAt: r.receivedAt
+    }));
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("stock:getTodayProcessReceivings 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:deleteStockItems", async (r, t) => {
+ipcMain.handle("stock:deleteStockItems", async (_event, ids) => {
   try {
-    const { prisma: e } = await Promise.resolve().then(() => w);
-    return { success: !0, data: (await e.materialStock.deleteMany({
-      where: { id: { in: t } }
-    })).count };
-  } catch (e) {
-    return console.error("stock:deleteStockItems 오류:", e), { success: !1, error: String(e) };
+    const { prisma: prisma2 } = await Promise.resolve().then(() => prisma$1);
+    const result = await prisma2.materialStock.deleteMany({
+      where: { id: { in: ids } }
+    });
+    return { success: true, data: result.count };
+  } catch (error) {
+    console.error("stock:deleteStockItems 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("stock:resetAllStockData", async () => {
+ipcMain.handle("stock:resetAllStockData", async () => {
   try {
-    const { prisma: r } = await Promise.resolve().then(() => w), t = await r.lotMaterial.deleteMany({});
+    const { prisma: prisma2 } = await Promise.resolve().then(() => prisma$1);
+    const lotMaterialsResult = await prisma2.lotMaterial.deleteMany({});
+    const stocksResult = await prisma2.materialStock.deleteMany({});
     return {
-      success: !0,
+      success: true,
       data: {
-        stocks: (await r.materialStock.deleteMany({})).count,
+        stocks: stocksResult.count,
         receivings: 0,
-        lotMaterials: t.count
+        lotMaterials: lotMaterialsResult.count
       }
     };
-  } catch (r) {
-    return console.error("stock:resetAllStockData 오류:", r), { success: !1, error: String(r) };
+  } catch (error) {
+    console.error("stock:resetAllStockData 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bom:createBOMItem", async (r, t) => {
+ipcMain.handle("bom:createBOMItem", async (_event, input) => {
   try {
-    return { success: !0, data: await ue(t) };
-  } catch (e) {
-    return console.error("bom:createBOMItem 오류:", e), { success: !1, error: String(e) };
+    const result = await createBOMItem(input);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bom:createBOMItem 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bom:updateBOMItem", async (r, t, e) => {
+ipcMain.handle("bom:updateBOMItem", async (_event, bomId, input) => {
   try {
-    return { success: !0, data: await ie(t, e) };
-  } catch (a) {
-    return console.error("bom:updateBOMItem 오류:", a), { success: !1, error: String(a) };
+    const result = await updateBOMItem(bomId, input);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bom:updateBOMItem 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bom:deleteBOMItem", async (r, t) => {
+ipcMain.handle("bom:deleteBOMItem", async (_event, bomId) => {
   try {
-    return { success: !0, data: await de(t) };
-  } catch (e) {
-    return console.error("bom:deleteBOMItem 오류:", e), { success: !1, error: String(e) };
+    const result = await deleteBOMItem(bomId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bom:deleteBOMItem 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bom:getBOMByProduct", async (r, t) => {
+ipcMain.handle("bom:getBOMByProduct", async (_event, productId) => {
   try {
-    return { success: !0, data: await le(t) };
-  } catch (e) {
-    return console.error("bom:getBOMByProduct 오류:", e), { success: !1, error: String(e) };
+    const result = await getBOMByProduct(productId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bom:getBOMByProduct 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("material:create", async (r, t) => {
+ipcMain.handle("material:create", async (_event, input) => {
   try {
-    return { success: !0, data: await be(t) };
-  } catch (e) {
-    return console.error("material:create 오류:", e), { success: !1, error: String(e) };
+    const result = await createMaterial(input);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("material:create 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("material:getById", async (r, t) => {
+ipcMain.handle("material:getById", async (_event, materialId) => {
   try {
-    return { success: !0, data: await ve(t) };
-  } catch (e) {
-    return console.error("material:getById 오류:", e), { success: !1, error: String(e) };
+    const result = await getMaterialById(materialId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("material:getById 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("material:update", async (r, t, e) => {
+ipcMain.handle("material:update", async (_event, materialId, input) => {
   try {
-    return { success: !0, data: await Ne(t, e) };
-  } catch (a) {
-    return console.error("material:update 오류:", a), { success: !1, error: String(a) };
+    const result = await updateMaterial(materialId, input);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("material:update 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("material:delete", async (r, t) => {
+ipcMain.handle("material:delete", async (_event, materialId) => {
   try {
-    return { success: !0, data: await ke(t) };
-  } catch (e) {
-    return console.error("material:delete 오류:", e), { success: !1, error: String(e) };
+    const result = await deleteMaterial(materialId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("material:delete 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("material:getAll", async () => {
+ipcMain.handle("material:getAll", async () => {
   try {
-    return { success: !0, data: await Le() };
-  } catch (r) {
-    return console.error("material:getAll 오류:", r), { success: !1, error: String(r) };
+    const result = await getAllMaterials();
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("material:getAll 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("lotTrace:traceForward", async (r, t) => {
+ipcMain.handle("lotTrace:traceForward", async (_event, lotId) => {
   try {
-    return { success: !0, data: await I(t) };
-  } catch (e) {
-    return console.error("lotTrace:traceForward 오류:", e), { success: !1, error: String(e) };
+    const result = await traceForward(lotId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("lotTrace:traceForward 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("lotTrace:traceBackward", async (r, t) => {
+ipcMain.handle("lotTrace:traceBackward", async (_event, lotId) => {
   try {
-    return { success: !0, data: await Q(t) };
-  } catch (e) {
-    return console.error("lotTrace:traceBackward 오류:", e), { success: !1, error: String(e) };
+    const result = await traceBackward(lotId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("lotTrace:traceBackward 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("lotTrace:buildTraceTree", async (r, t, e) => {
+ipcMain.handle("lotTrace:buildTraceTree", async (_event, lotId, direction) => {
   try {
-    return { success: !0, data: await Ie(t, e) };
-  } catch (a) {
-    return console.error("lotTrace:buildTraceTree 오류:", a), { success: !1, error: String(a) };
+    const result = await buildTraceTree(lotId, direction);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("lotTrace:buildTraceTree 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("inspection:create", async (r, t) => {
+ipcMain.handle("inspection:create", async (_event, input) => {
   try {
-    return { success: !0, data: await Qe(t) };
-  } catch (e) {
-    return console.error("inspection:create 오류:", e), { success: !1, error: String(e) };
+    const result = await createInspection(input);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("inspection:create 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("inspection:getByLot", async (r, t) => {
+ipcMain.handle("inspection:getByLot", async (_event, lotId) => {
   try {
-    return { success: !0, data: await Ae(t) };
-  } catch (e) {
-    return console.error("inspection:getByLot 오류:", e), { success: !1, error: String(e) };
+    const result = await getInspectionsByLot(lotId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("inspection:getByLot 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("line:getAll", async () => {
+ipcMain.handle("line:getAll", async () => {
   try {
-    return { success: !0, data: await W() };
-  } catch (r) {
-    return console.error("line:getAll 오류:", r), { success: !1, error: String(r) };
+    const result = await getAllLines();
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("line:getAll 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("line:getByProcess", async (r, t) => {
+ipcMain.handle("line:getByProcess", async (_event, processCode) => {
   try {
-    return { success: !0, data: await qe(t) };
-  } catch (e) {
-    return console.error("line:getByProcess 오류:", e), { success: !1, error: String(e) };
+    const result = await getLinesByProcess(processCode);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("line:getByProcess 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("sequence:getNext", async (r, t) => {
+ipcMain.handle("sequence:getNext", async (_event, prefix) => {
   try {
-    return { success: !0, data: await q(t) };
-  } catch (e) {
-    return console.error("sequence:getNext 오류:", e), { success: !1, error: String(e) };
+    const result = await getNextSequence(prefix);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("sequence:getNext 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("sequence:getNextBundle", async (r, t) => {
+ipcMain.handle("sequence:getNextBundle", async (_event, prefix) => {
   try {
-    return { success: !0, data: await M(t) };
-  } catch (e) {
-    return console.error("sequence:getNextBundle 오류:", e), { success: !1, error: String(e) };
+    const result = await getNextBundleSequence(prefix);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("sequence:getNextBundle 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:create", async (r, t) => {
+ipcMain.handle("bundle:create", async (_event, input) => {
   try {
-    return { success: !0, data: await Me(t) };
-  } catch (e) {
-    return console.error("bundle:create 오류:", e), { success: !1, error: String(e) };
+    const result = await createBundle(input);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bundle:create 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:addToBundle", async (r, t) => {
+ipcMain.handle("bundle:addToBundle", async (_event, input) => {
   try {
-    return { success: !0, data: await Ce(t) };
-  } catch (e) {
-    return console.error("bundle:addToBundle 오류:", e), { success: !1, error: String(e) };
+    const result = await addToBundle(input);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bundle:addToBundle 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:removeFromBundle", async (r, t) => {
+ipcMain.handle("bundle:removeFromBundle", async (_event, bundleItemId) => {
   try {
-    return { success: !0, data: await Be(t) };
-  } catch (e) {
-    return console.error("bundle:removeFromBundle 오류:", e), { success: !1, error: String(e) };
+    const result = await removeFromBundle(bundleItemId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bundle:removeFromBundle 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:complete", async (r, t) => {
+ipcMain.handle("bundle:complete", async (_event, bundleLotId) => {
   try {
-    return { success: !0, data: await _e(t) };
-  } catch (e) {
-    return console.error("bundle:complete 오류:", e), { success: !1, error: String(e) };
+    const result = await completeBundle(bundleLotId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bundle:complete 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:unbundle", async (r, t) => {
+ipcMain.handle("bundle:unbundle", async (_event, bundleLotId) => {
   try {
-    return await Pe(t), { success: !0 };
-  } catch (e) {
-    return console.error("bundle:unbundle 오류:", e), { success: !1, error: String(e) };
+    await unbundle(bundleLotId);
+    return { success: true };
+  } catch (error) {
+    console.error("bundle:unbundle 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:delete", async (r, t) => {
+ipcMain.handle("bundle:delete", async (_event, bundleLotId) => {
   try {
-    return await Te(t), { success: !0 };
-  } catch (e) {
-    return console.error("bundle:delete 오류:", e), { success: !1, error: String(e) };
+    await deleteBundle(bundleLotId);
+    return { success: true };
+  } catch (error) {
+    console.error("bundle:delete 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:getById", async (r, t) => {
+ipcMain.handle("bundle:getById", async (_event, bundleLotId) => {
   try {
-    return { success: !0, data: await v(t) };
-  } catch (e) {
-    return console.error("bundle:getById 오류:", e), { success: !1, error: String(e) };
+    const result = await getBundleById(bundleLotId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bundle:getById 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:getByNo", async (r, t) => {
+ipcMain.handle("bundle:getByNo", async (_event, bundleNo) => {
   try {
-    return { success: !0, data: await Ee(t) };
-  } catch (e) {
-    return console.error("bundle:getByNo 오류:", e), { success: !1, error: String(e) };
+    const result = await getBundleByNo(bundleNo);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bundle:getByNo 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:getActive", async () => {
+ipcMain.handle("bundle:getActive", async () => {
   try {
-    return { success: !0, data: await De() };
-  } catch (r) {
-    return console.error("bundle:getActive 오류:", r), { success: !1, error: String(r) };
+    const result = await getActiveBundles();
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bundle:getActive 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:getAvailableLots", async (r, t) => {
+ipcMain.handle("bundle:getAvailableLots", async (_event, productId) => {
   try {
-    return { success: !0, data: await Oe(t) };
-  } catch (e) {
-    return console.error("bundle:getAvailableLots 오류:", e), { success: !1, error: String(e) };
+    const result = await getAvailableLotsForBundle(productId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bundle:getAvailableLots 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:createSet", async (r, t) => {
+ipcMain.handle("bundle:createSet", async (_event, items) => {
   try {
-    return { success: !0, data: await Ue(t) };
-  } catch (e) {
-    return console.error("bundle:createSet 오류:", e), { success: !1, error: String(e) };
+    const result = await createSetBundle(items);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bundle:createSet 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("bundle:shipEntire", async (r, t) => {
+ipcMain.handle("bundle:shipEntire", async (_event, bundleId) => {
   try {
-    return { success: !0, data: await Re(t) };
-  } catch (e) {
-    return console.error("bundle:shipEntire 오류:", e), { success: !1, error: String(e) };
+    const result = await shipEntireBundle(bundleId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("bundle:shipEntire 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("product:getAll", async () => {
+ipcMain.handle("product:getAll", async () => {
   try {
-    return { success: !0, data: await We() };
-  } catch (r) {
-    return console.error("product:getAll 오류:", r), { success: !1, error: String(r) };
+    const result = await getAllProducts();
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("product:getAll 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("product:getById", async (r, t) => {
+ipcMain.handle("product:getById", async (_event, productId) => {
   try {
-    return { success: !0, data: await $e(t) };
-  } catch (e) {
-    return console.error("product:getById 오류:", e), { success: !1, error: String(e) };
+    const result = await getProductById(productId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("product:getById 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("product:create", async (r, t) => {
+ipcMain.handle("product:create", async (_event, input) => {
   try {
-    return { success: !0, data: await Fe(t) };
-  } catch (e) {
-    return console.error("product:create 오류:", e), { success: !1, error: String(e) };
+    const result = await createProduct(input);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("product:create 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("product:update", async (r, t, e) => {
+ipcMain.handle("product:update", async (_event, productId, input) => {
   try {
-    return { success: !0, data: await xe(t, e) };
-  } catch (a) {
-    return console.error("product:update 오류:", a), { success: !1, error: String(a) };
+    const result = await updateProduct(productId, input);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("product:update 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
-i.handle("product:delete", async (r, t) => {
+ipcMain.handle("product:delete", async (_event, productId) => {
   try {
-    return { success: !0, data: await Ve(t) };
-  } catch (e) {
-    return console.error("product:delete 오류:", e), { success: !1, error: String(e) };
+    const result = await deleteProduct(productId);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("product:delete 오류:", error);
+    return { success: false, error: String(error) };
   }
 });
