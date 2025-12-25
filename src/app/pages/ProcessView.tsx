@@ -62,10 +62,11 @@ import { useAuth } from '../context/AuthContext'
 import { useProduct } from '../context/ProductContext'
 import { useBOM } from '../context/BOMContext'
 import { useMaterial } from '../context/MaterialContext'
-import { parseBarcode, parseHQBarcode, getProcessName, generateBarcodeV2, isTempLotNumber } from '@/services/barcodeService'
+import { parseBarcode, parseHQBarcode, getProcessName, generateBarcodeV2, isTempLotNumber, parsePOBarcode, isPOBarcode } from '@/services/barcodeService'
 import { hasBusinessAPI, getAPI } from '@/lib/electronBridge'
 import { useStock, type ProcessStockStatus, type ScanToProcessInput } from '../context/StockContext'
 import { type LotWithRelations } from '../context/ProductionContext'
+import { usePurchaseOrder } from '../context/PurchaseOrderContext'
 import { BundleDialog, LabelPreviewDialog, DocumentPreviewDialog, type DocumentData, type InputMaterialInfo } from '../components/dialogs'
 import { createLabel, printLabel, downloadLabel } from '@/services/labelService'
 
@@ -130,6 +131,7 @@ export const ProcessView = () => {
     setCurrentProcess,
     refreshTodayLots,
     clearError,
+    deleteLot,
   } = useProduction()
   const {
     deductByBOM,
@@ -137,6 +139,11 @@ export const ProcessView = () => {
     scanToProcess,
     checkProcessStockStatus,
   } = useStock()
+  const {
+    getPurchaseOrderItemByBarcode,
+    startPurchaseOrderItem,
+    updatePurchaseOrderItemProgress,
+  } = usePurchaseOrder()
 
   const [barcode, setBarcode] = useState('')
   const [lines, setLines] = useState<Line[]>([])
@@ -164,32 +171,25 @@ export const ProcessView = () => {
   const [inProgressTasks, setInProgressTasks] = useState<LotWithRelations[]>([])
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
 
-  // 작업 선택 상태: 완제품 + 절압착 품번
-  const [selectedProductCode, setSelectedProductCode] = useState('')
-  const [productSearchQuery, setProductSearchQuery] = useState('')
-  const [showProductDropdown, setShowProductDropdown] = useState(false)
-  const [selectedCrimpCode, setSelectedCrimpCode] = useState('')
-  const [showCrimpDropdown, setShowCrimpDropdown] = useState(false)
-  const productInputRef = useRef<HTMLInputElement>(null)
-  const crimpInputRef = useRef<HTMLButtonElement>(null)
+  // 발주서 바코드 스캔 시 현재 아이템
+  const [currentPOItem, setCurrentPOItem] = useState<{
+    id: number
+    barcode: string
+    productCode: string
+    processCode: string
+    plannedQty: number
+    crimpCode?: string
+  } | null>(null)
 
-  // 드롭다운 키보드 네비게이션용 인덱스
-  const [productDropdownIndex, setProductDropdownIndex] = useState(-1)
-  const [crimpDropdownIndex, setCrimpDropdownIndex] = useState(-1)
+  // 작업 선택 상태: 완제품 + 절압착 품번 (바코드 스캔으로 자동 선택)
+  const [selectedProductCode, setSelectedProductCode] = useState('')
+  const [selectedCrimpCode, setSelectedCrimpCode] = useState('')
 
   const processCode = processId?.toUpperCase() || 'CA'
   const processName = getProcessName(processCode)
 
   // 선택한 완제품 정보
   const selectedProduct = products.find(p => p.code === selectedProductCode)
-
-  // 완제품 필터링 (검색어 기반)
-  const filteredProducts = productSearchQuery.trim()
-    ? products.filter(p =>
-        p.code.toLowerCase().includes(productSearchQuery.toLowerCase()) ||
-        p.name.toLowerCase().includes(productSearchQuery.toLowerCase())
-      )
-    : products
 
   // 선택한 완제품의 절압착 품번 목록 (BOM LV4 CA)
   const crimpCodes = useMemo(() => {
@@ -292,117 +292,12 @@ export const ProcessView = () => {
       const query = searchQuery.toLowerCase().trim()
       filtered = filtered.filter(lot =>
         lot.lotNumber.toLowerCase().includes(query) ||
-        lot.product?.code?.toLowerCase().includes(query)
+        lot.productCode?.toLowerCase().includes(query)
       )
     }
 
     return filtered
   }, [todayLots, statusFilter, searchQuery])
-
-  // 완제품 선택 핸들러
-  const handleSelectProduct = (code: string) => {
-    setSelectedProductCode(code)
-    const product = products.find(p => p.code === code)
-    setProductSearchQuery(product ? `${code} - ${product.name}` : code)
-    setShowProductDropdown(false)
-    setProductDropdownIndex(-1)
-    // 완제품 변경 시 절압착 품번 초기화
-    setSelectedCrimpCode('')
-    // CA 공정이면 자동으로 절압착 품번 드롭다운으로 이동
-    if (processCode === 'CA') {
-      setTimeout(() => {
-        setShowCrimpDropdown(true)
-      }, 100)
-    }
-  }
-
-  // 절압착 품번 선택 핸들러
-  const handleSelectCrimpCode = (code: string) => {
-    setSelectedCrimpCode(code)
-    setShowCrimpDropdown(false)
-    setCrimpDropdownIndex(-1)
-    // 바코드 입력으로 포커스 이동
-    setTimeout(() => {
-      barcodeInputRef.current?.focus()
-    }, 100)
-  }
-
-  // 완제품 드롭다운 키보드 핸들러
-  const handleProductKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!showProductDropdown) {
-      if (e.key === 'ArrowDown' || e.key === 'Enter') {
-        setShowProductDropdown(true)
-        setProductDropdownIndex(0)
-        e.preventDefault()
-      }
-      return
-    }
-
-    const maxIndex = Math.min(filteredProducts.length, 20) - 1
-
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault()
-        setProductDropdownIndex(prev => Math.min(prev + 1, maxIndex))
-        break
-      case 'ArrowUp':
-        e.preventDefault()
-        setProductDropdownIndex(prev => Math.max(prev - 1, 0))
-        break
-      case 'Enter':
-        e.preventDefault()
-        if (productDropdownIndex >= 0 && productDropdownIndex <= maxIndex) {
-          const selectedProduct = filteredProducts[productDropdownIndex]
-          handleSelectProduct(selectedProduct.code)
-        } else if (filteredProducts.length === 1) {
-          // 검색 결과가 하나면 자동 선택
-          handleSelectProduct(filteredProducts[0].code)
-        }
-        break
-      case 'Escape':
-        setShowProductDropdown(false)
-        setProductDropdownIndex(-1)
-        break
-    }
-  }
-
-  // 절압착 품번 드롭다운 키보드 핸들러
-  const handleCrimpKeyDown = (e: React.KeyboardEvent) => {
-    if (!showCrimpDropdown || crimpCodes.length === 0) {
-      if (e.key === 'ArrowDown' || e.key === 'Enter') {
-        setShowCrimpDropdown(true)
-        setCrimpDropdownIndex(0)
-        e.preventDefault()
-      }
-      return
-    }
-
-    const maxIndex = crimpCodes.length - 1
-
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault()
-        setCrimpDropdownIndex(prev => Math.min(prev + 1, maxIndex))
-        break
-      case 'ArrowUp':
-        e.preventDefault()
-        setCrimpDropdownIndex(prev => Math.max(prev - 1, 0))
-        break
-      case 'Enter':
-        e.preventDefault()
-        if (crimpDropdownIndex >= 0 && crimpDropdownIndex <= maxIndex) {
-          handleSelectCrimpCode(crimpCodes[crimpDropdownIndex])
-        } else if (crimpCodes.length === 1) {
-          // 옵션이 하나면 자동 선택
-          handleSelectCrimpCode(crimpCodes[0])
-        }
-        break
-      case 'Escape':
-        setShowCrimpDropdown(false)
-        setCrimpDropdownIndex(-1)
-        break
-    }
-  }
 
   // 공정 변경 시 초기화
   useEffect(() => {
@@ -417,7 +312,6 @@ export const ProcessView = () => {
     setSelectAll(false)
     // 작업 선택 초기화
     setSelectedProductCode('')
-    setProductSearchQuery('')
     setSelectedCrimpCode('')
     setSelectedTaskId(null)
   }, [processCode])
@@ -469,10 +363,9 @@ export const ProcessView = () => {
     setCurrentLot(task)
     setCompletedQty(task.completedQty || 0)
     setDefectQty(task.defectQty || 0)
-    // 선택한 작업의 완제품 정보로 작업 선택 UI 업데이트
-    if (task.product) {
-      setSelectedProductCode(task.product.code)
-      setProductSearchQuery(`${task.product.code} - ${task.product.name}`)
+    // 선택한 작업의 완제품 정보로 작업 선택 상태 업데이트
+    if (task.productCode) {
+      setSelectedProductCode(task.productCode)
     }
     toast.info(`작업 ${task.lotNumber} 선택됨`)
   }
@@ -487,16 +380,19 @@ export const ProcessView = () => {
     setSelectAll(false)
     // 작업 선택 초기화
     setSelectedProductCode('')
-    setProductSearchQuery('')
     setSelectedCrimpCode('')
     barcodeInputRef.current?.focus()
   }
 
-  // 바코드 입력 자동 포커스
+  // 바코드 입력 자동 포커스 (컴포넌트 마운트 및 공정 변경 시)
   useEffect(() => {
-    if (barcodeInputRef.current) {
-      barcodeInputRef.current.focus()
-    }
+    // 약간의 딜레이를 주어 DOM이 완전히 렌더링된 후 포커스
+    const timer = setTimeout(() => {
+      if (barcodeInputRef.current) {
+        barcodeInputRef.current.focus()
+      }
+    }, 200)
+    return () => clearTimeout(timer)
   }, [processId])
 
   // 자동 스캔 타이머 참조
@@ -573,11 +469,145 @@ export const ProcessView = () => {
 
     const trimmedBarcode = barcode.trim()
 
-    // 선행 조건 검증: CA 공정에서는 완제품 선택 필수
+    // ===== PO(발주서) 바코드 처리 =====
+    if (isPOBarcode(trimmedBarcode)) {
+      const poParsed = parsePOBarcode(trimmedBarcode)
+      if (poParsed) {
+        // 발주서 아이템 조회
+        const poItem = await getPurchaseOrderItemByBarcode(trimmedBarcode)
+        if (!poItem) {
+          toast.error('등록되지 않은 발주서 바코드입니다.')
+          setBarcode('')
+          setTimeout(() => barcodeInputRef.current?.focus(), 50)
+          return
+        }
+
+        // 공정 코드 검증
+        if (poItem.processCode !== processCode) {
+          toast.error(`이 발주서는 ${poItem.processCode} 공정용입니다. 현재 공정: ${processCode}`)
+          setBarcode('')
+          setTimeout(() => barcodeInputRef.current?.focus(), 50)
+          return
+        }
+
+        // 이미 완료된 아이템인지 확인
+        if (poItem.status === 'COMPLETED') {
+          toast.warning('이미 완료된 발주서 아이템입니다.')
+          setBarcode('')
+          setTimeout(() => barcodeInputRef.current?.focus(), 50)
+          return
+        }
+
+        // 자동으로 완제품/절압착 품번 선택
+        const productCode = poItem.crimpCode
+          ? poItem.productCode?.replace(`-${poItem.crimpCode.split('-').pop()}`, '') || poParsed.productCode
+          : poParsed.productCode
+
+        // 완제품 찾기
+        const product = products.find(p =>
+          p.code === productCode ||
+          p.code === poItem.productCode
+        )
+
+        if (product) {
+          setSelectedProductCode(product.code)
+        } else {
+          // 품번으로 직접 설정
+          setSelectedProductCode(poParsed.productCode)
+        }
+
+        // CA 공정: 절압착 품번 자동 선택
+        if (processCode === 'CA' && poItem.crimpCode) {
+          setSelectedCrimpCode(poItem.crimpCode)
+        }
+
+        // 발주서 아이템 작업 시작
+        try {
+          await startPurchaseOrderItem(poItem.id, user?.id ? Number(user.id) : undefined, currentLine?.code)
+          setCurrentPOItem({
+            id: poItem.id,
+            barcode: trimmedBarcode,
+            productCode: poItem.productCode || poParsed.productCode,
+            processCode: poItem.processCode,
+            plannedQty: poItem.plannedQty,
+            crimpCode: poItem.crimpCode,
+          })
+
+          toast.success(
+            `발주서 스캔 완료\n품번: ${poItem.productCode || poParsed.productCode}\n계획수량: ${poParsed.quantity}개`,
+            { duration: 4000 }
+          )
+        } catch (err) {
+          console.error('발주서 아이템 시작 실패:', err)
+          // 시작 실패해도 선택은 유지
+        }
+
+        setBarcode('')
+        setCompletedQty(poParsed.quantity) // 계획수량으로 초기화
+        setTimeout(() => barcodeInputRef.current?.focus(), 50)
+        return
+      }
+    }
+
+    // ===== 전공정 바코드 처리 (CA 제외 공정) =====
+    // MC, SB, SP, PA 등: 이전 공정 바코드 스캔 시 작업 자동 등록
+    if (processCode !== 'CA') {
+      const parsed = parseBarcode(trimmedBarcode)
+
+      // 유효한 생산 바코드인지 확인 (V1 또는 V2)
+      if (parsed.isValid && parsed.processCode && parsed.processCode !== 'UNKNOWN') {
+        const prevProcessCode = parsed.processCode
+
+        // 공정 순서 정의 (현재 공정보다 앞선 공정만 허용)
+        const processOrder = ['CA', 'MC', 'MS', 'SB', 'HS', 'SP', 'PA', 'CI', 'VI']
+        const currentIdx = processOrder.indexOf(processCode)
+        const prevIdx = processOrder.indexOf(prevProcessCode)
+
+        // 이전 공정 바코드인지 확인
+        if (prevIdx >= 0 && prevIdx < currentIdx) {
+          // 완제품 품번 추출
+          const productCodeFromBarcode = parsed.productCode
+
+          if (productCodeFromBarcode) {
+            // 완제품 찾기
+            const product = products.find(p =>
+              p.code === productCodeFromBarcode ||
+              p.code.startsWith(productCodeFromBarcode.split('-')[0]) // 절압착 품번에서 완제품 추출
+            )
+
+            if (product) {
+              setSelectedProductCode(product.code)
+            } else {
+              // 절압착 품번이면 완제품 코드만 추출
+              const finishedProductCode = productCodeFromBarcode.includes('-')
+                ? productCodeFromBarcode.split('-')[0]
+                : productCodeFromBarcode
+              setSelectedProductCode(finishedProductCode)
+            }
+
+            // 수량 설정
+            if (parsed.quantity) {
+              setCompletedQty(parsed.quantity)
+            }
+
+            toast.success(
+              `전공정(${prevProcessCode}) 바코드 스캔\n품번: ${productCodeFromBarcode}\n수량: ${parsed.quantity || '미지정'}`,
+              { duration: 4000 }
+            )
+
+            setBarcode('')
+            setTimeout(() => barcodeInputRef.current?.focus(), 50)
+            return
+          }
+        }
+      }
+    }
+
+    // 선행 조건 검증: CA 공정에서는 발주서 바코드 스캔으로 완제품 선택 필수
     if (processCode === 'CA' && !selectedProductCode) {
-      toast.error('먼저 완제품을 선택해주세요.')
-      productInputRef.current?.focus()
+      toast.error('먼저 발주서 바코드를 스캔하세요.')
       setBarcode('')
+      setTimeout(() => barcodeInputRef.current?.focus(), 50)
       return
     }
 
@@ -618,7 +648,7 @@ export const ProcessView = () => {
             // DB에 LOT이 있으면 정보 표시
             const lot = result.data as LotWithRelations
             toast.info(
-              `기존 LOT 확인: ${lot.lotNumber}\n상태: ${lot.status}, 수량: ${lot.quantity}`,
+              `기존 LOT 확인: ${lot.lotNumber}\n상태: ${lot.status}, 수량: ${lot.completedQty}/${lot.plannedQty}`,
               { duration: 3000 }
             )
           }
@@ -828,8 +858,7 @@ export const ProcessView = () => {
 
     // 완제품 선택 검증
     if (!selectedProductCode) {
-      toast.error('완제품을 선택해주세요.')
-      productInputRef.current?.focus()
+      toast.error(processCode === 'CA' ? '먼저 발주서 바코드를 스캔하세요.' : '먼저 전공정 바코드를 스캔하세요.')
       return
     }
 
@@ -859,13 +888,14 @@ export const ProcessView = () => {
       const productId = selectedProduct?.id
 
       // 신규 LOT 생성
+      // plannedQty: 발주서가 있으면 발주서 지시수량, 없으면 자재 수량 합계
       const newLot = await createLot({
         processCode,
         productId,
         productCode: selectedProductCode,
-        plannedQty: totalQty,
+        plannedQty: currentPOItem?.plannedQty || totalQty,
         lineCode: currentLine?.code,
-        workerId: user?.id,
+        workerId: user?.id ? Number(user.id) : undefined,
         // 투입 자재 상세 정보 (바코드, 코드, 이름 포함)
         inputMaterialDetails: selectedItems.map(item => ({
           barcode: item.barcode,
@@ -896,8 +926,12 @@ export const ProcessView = () => {
           if (!deductionResult.success) {
             console.warn('자재 차감 경고:', deductionResult.errors)
             toast.warning(`자재 차감 경고: ${deductionResult.errors.join(', ')}`)
-          } else if (deductionResult.totalDeducted > 0) {
-            toast.info(`자재 ${deductionResult.totalDeducted}개 차감됨`)
+          } else {
+            // deductedItems에서 총 차감량 계산
+            const totalDeducted = deductionResult.deductedItems.reduce((sum, item) => sum + item.deductedQty, 0)
+            if (totalDeducted > 0) {
+              toast.info(`자재 ${totalDeducted}개 차감됨`)
+            }
           }
         } catch (deductErr) {
           console.error('자재 차감 오류:', deductErr)
@@ -908,6 +942,23 @@ export const ProcessView = () => {
       setCurrentLot(newLot)
       setCompletedQty(0)
       setDefectQty(0)
+
+      // 발주서 아이템 진행률 업데이트
+      if (currentPOItem) {
+        try {
+          await updatePurchaseOrderItemProgress({
+            itemId: currentPOItem.id,
+            completedQty: totalQty,
+            defectQty: 0,
+          })
+          console.log(`[ProcessView] PO 아이템 진행률 업데이트: ${currentPOItem.id}, +${totalQty}`)
+        } catch (poErr) {
+          console.error('발주서 아이템 진행률 업데이트 실패:', poErr)
+          // 업데이트 실패해도 LOT 생성은 유지
+        }
+        // PO 아이템 초기화
+        setCurrentPOItem(null)
+      }
 
       // 승인된 항목 제거
       setScannedItems(prev => prev.filter(item => !item.isSelected))
@@ -946,9 +997,17 @@ export const ProcessView = () => {
       setSelectedTaskId(null)
       setCompletedQty(0)
       setDefectQty(0)
+      // 작업 선택 초기화
+      setSelectedProductCode('')
+      setSelectedCrimpCode('')
+      setCurrentPOItem(null)
+      setBarcode('')
+      setScannedItems([])
       toast.success('작업이 취소되었습니다.')
       refreshTodayLots()
       loadInProgressTasks() // 진행 중 작업 목록 갱신
+      // 바코드 입력으로 포커스
+      setTimeout(() => barcodeInputRef.current?.focus(), 100)
     } catch (err) {
       console.error('Cancel error:', err)
       toast.error('작업 취소 중 오류가 발생했습니다.')
@@ -969,7 +1028,7 @@ export const ProcessView = () => {
       const updatedLot = await startProduction(
         currentLot.id,
         currentLine.code,
-        user?.id
+        user?.id ? Number(user.id) : undefined
       )
       setCurrentLot(updatedLot)
       toast.success('작업 시작')
@@ -994,8 +1053,8 @@ export const ProcessView = () => {
     try {
       // 반제품 품번 결정: CA 공정은 절압착품번, 기타는 완제품 코드
       const semiProductCode = processCode === 'CA'
-        ? (selectedCrimpCode || currentLot.crimpCode || currentLot.product?.code)
-        : currentLot.product?.code
+        ? (selectedCrimpCode || currentLot.crimpCode || currentLot.productCode)
+        : currentLot.productCode
 
       const completedLot = await completeProduction({
         lotId: currentLot.id,
@@ -1058,7 +1117,14 @@ export const ProcessView = () => {
     setCompletedQty(0)
     setDefectQty(0)
     setBarcode('')
+    // 작업 선택 초기화
+    setSelectedProductCode('')
+    setSelectedCrimpCode('')
+    setCurrentPOItem(null)
+    setScannedItems([])
     clearError()
+    // 바코드 입력으로 포커스
+    setTimeout(() => barcodeInputRef.current?.focus(), 100)
   }
 
   // 테스트 스캔 (개발용)
@@ -1139,121 +1205,82 @@ export const ProcessView = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full min-h-[500px]">
         {/* Left Panel: Scan & Scanned Items */}
         <div className="lg:col-span-1 space-y-4 flex flex-col">
-          {/* 작업 선택 섹션: 완제품 + 절압착 품번 */}
+          {/* 작업 선택 섹션: 바코드 스캔으로 자동 선택 */}
           <Card className="shadow-md border-blue-200 bg-blue-50/30">
             <CardHeader className="pb-2">
-              <CardTitle className="text-base flex items-center gap-2">
-                <Package className="h-4 w-4 text-blue-600" />
-                작업 선택
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {/* 완제품 선택 */}
-              <div className="space-y-1.5 relative">
-                <Label className="text-xs text-slate-600">완제품 품번</Label>
-                <Input
-                  ref={productInputRef}
-                  placeholder="품번 또는 품명 입력..."
-                  value={productSearchQuery}
-                  onChange={(e) => {
-                    setProductSearchQuery(e.target.value)
-                    setShowProductDropdown(true)
-                    setProductDropdownIndex(0)
-                    // 입력이 변경되면 선택 해제
-                    if (selectedProductCode && e.target.value !== `${selectedProductCode} - ${selectedProduct?.name}`) {
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Package className="h-4 w-4 text-blue-600" />
+                  현재 작업
+                </CardTitle>
+                {selectedProductCode && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-xs text-slate-400 hover:text-red-500"
+                    onClick={() => {
                       setSelectedProductCode('')
                       setSelectedCrimpCode('')
-                    }
-                  }}
-                  onFocus={() => setShowProductDropdown(true)}
-                  onBlur={() => setTimeout(() => setShowProductDropdown(false), 200)}
-                  onKeyDown={handleProductKeyDown}
-                  className="h-9 font-mono text-sm"
-                />
-                {/* 완제품 드롭다운 */}
-                {showProductDropdown && filteredProducts.length > 0 && (
-                  <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-48 overflow-auto">
-                    {filteredProducts.slice(0, 20).map((product, index) => (
-                      <button
-                        key={product.id}
-                        type="button"
-                        className={`w-full px-3 py-2 text-left text-sm hover:bg-blue-50 flex justify-between items-center ${
-                          selectedProductCode === product.code ? 'bg-blue-100' : ''
-                        } ${index === productDropdownIndex ? 'bg-blue-100 ring-1 ring-inset ring-blue-400' : ''}`}
-                        onMouseDown={() => handleSelectProduct(product.code)}
-                      >
-                        <span className="font-mono text-blue-600">{product.code}</span>
-                        <span className="text-slate-500 truncate ml-2">{product.name}</span>
-                      </button>
-                    ))}
-                    {filteredProducts.length > 20 && (
-                      <div className="px-3 py-2 text-xs text-slate-400 text-center border-t">
-                        외 {filteredProducts.length - 20}개 더...
-                      </div>
-                    )}
-                  </div>
-                )}
-                {products.length === 0 && (
-                  <p className="text-xs text-amber-600">⚠️ 완제품이 등록되지 않았습니다.</p>
+                      setCurrentPOItem(null)
+                      setCurrentLot(null)
+                      setScannedItems([])
+                      setBarcode('')
+                      toast.info('작업 선택이 초기화되었습니다.')
+                      setTimeout(() => barcodeInputRef.current?.focus(), 100)
+                    }}
+                  >
+                    <XCircle className="h-3 w-3 mr-1" />
+                    초기화
+                  </Button>
                 )}
               </div>
-
-              {/* CA 공정일 때만 절압착 품번 선택 표시 */}
-              {processCode === 'CA' && selectedProductCode && (
-                <div className="space-y-1.5 relative">
-                  <Label className="text-xs text-slate-600">절압착 품번</Label>
-                  {crimpCodes.length > 0 ? (
-                    <>
-                      <Button
-                        ref={crimpInputRef}
-                        type="button"
-                        variant="outline"
-                        className="w-full h-9 justify-between font-mono text-sm"
-                        onClick={() => {
-                          setShowCrimpDropdown(!showCrimpDropdown)
-                          setCrimpDropdownIndex(0)
-                        }}
-                        onKeyDown={handleCrimpKeyDown}
-                      >
-                        <span className={selectedCrimpCode ? 'text-purple-600' : 'text-slate-400'}>
-                          {selectedCrimpCode || '절압착 품번 선택...'}
-                        </span>
-                        <ChevronDown className="h-4 w-4" />
-                      </Button>
-                      {showCrimpDropdown && (
-                        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-48 overflow-auto">
-                          {crimpCodes.map((code, index) => (
-                            <button
-                              key={code}
-                              type="button"
-                              className={`w-full px-3 py-2 text-left text-sm hover:bg-purple-50 font-mono ${
-                                selectedCrimpCode === code ? 'bg-purple-100 text-purple-700' : ''
-                              } ${index === crimpDropdownIndex ? 'bg-purple-100 ring-1 ring-inset ring-purple-400' : ''}`}
-                              onClick={() => handleSelectCrimpCode(code)}
-                            >
-                              {code}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <p className="text-xs text-amber-600">⚠️ BOM에 절압착 품번이 없습니다.</p>
+            </CardHeader>
+            <CardContent>
+              {/* 작업 선택 상태 표시 */}
+              {selectedProductCode ? (
+                <div className="space-y-2">
+                  {/* 완제품 표시 */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500 w-16">완제품:</span>
+                    <Badge className="bg-blue-100 text-blue-700 border-blue-200 font-mono">
+                      {selectedProductCode}
+                    </Badge>
+                    {selectedProduct && (
+                      <span className="text-xs text-slate-500 truncate max-w-[120px]">
+                        {selectedProduct.name}
+                      </span>
+                    )}
+                  </div>
+                  {/* CA 공정일 때 절압착 품번 표시 */}
+                  {processCode === 'CA' && selectedCrimpCode && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500 w-16">절압착:</span>
+                      <Badge className="bg-purple-100 text-purple-700 border-purple-200 font-mono">
+                        {selectedCrimpCode}
+                      </Badge>
+                    </div>
+                  )}
+                  {/* PO 바코드로 선택된 경우 표시 */}
+                  {currentPOItem && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500 w-16">발주서:</span>
+                      <Badge variant="outline" className="text-xs font-mono">
+                        {currentPOItem.barcode}
+                      </Badge>
+                    </div>
                   )}
                 </div>
-              )}
-
-              {/* 선택 상태 표시 */}
-              {selectedProductCode && (
-                <div className="flex items-center gap-2 pt-1">
-                  <Badge variant="outline" className="bg-blue-100 text-blue-700 border-blue-200">
-                    {selectedProductCode}
-                  </Badge>
-                  {processCode === 'CA' && selectedCrimpCode && (
-                    <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-200">
-                      {selectedCrimpCode}
-                    </Badge>
-                  )}
+              ) : (
+                <div className="text-center py-3">
+                  <ScanLine className="h-6 w-6 mx-auto mb-2 text-slate-300" />
+                  <p className="text-sm text-slate-500">
+                    {processCode === 'CA'
+                      ? '발주서 바코드를 스캔하세요'
+                      : '전공정 바코드를 스캔하세요'}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    바코드 스캔 시 작업이 자동 선택됩니다
+                  </p>
                 </div>
               )}
             </CardContent>
@@ -1261,20 +1288,22 @@ export const ProcessView = () => {
 
           {/* Scan Section */}
           <Card className="shadow-md border-slate-200">
-            <CardHeader className="pb-3 flex flex-row items-center justify-between">
-              <CardTitle className="text-lg flex items-center gap-2">
-                <ScanLine className="h-5 w-5 text-blue-600" />
-                바코드 스캔
-              </CardTitle>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs text-slate-400 hover:text-blue-600"
-                onClick={handleTestScan}
-                disabled={isProcessing}
-              >
-                [개발용] 테스트
-              </Button>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <ScanLine className="h-5 w-5 text-blue-600" />
+                  바코드 스캔
+                </CardTitle>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs text-slate-400 hover:text-blue-600"
+                  onClick={handleTestScan}
+                  disabled={isProcessing}
+                >
+                  [개발용] 테스트
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleScan} className="space-y-4">
@@ -1449,7 +1478,7 @@ export const ProcessView = () => {
                             )}
                           </div>
                           <div className="font-medium text-slate-900 truncate">
-                            {task.product?.name || '(미지정)'}
+                            {task.productName || '(미지정)'}
                           </div>
                         </div>
                         <div className="text-right ml-2 shrink-0">
@@ -1505,7 +1534,7 @@ export const ProcessView = () => {
                     <div className="space-y-1">
                       <Label className="text-slate-500">지시 수량</Label>
                       <div className="font-mono text-lg font-bold text-blue-600 bg-blue-50 p-2 rounded text-right">
-                        {currentLot.plannedQty} EA
+                        {currentPOItem?.plannedQty ?? currentLot.plannedQty} EA
                       </div>
                     </div>
                   </div>
@@ -1513,7 +1542,7 @@ export const ProcessView = () => {
                   <div className="space-y-1">
                     <Label className="text-slate-500">품명</Label>
                     <div className="text-lg font-medium border-b border-slate-200 pb-1">
-                      {currentLot.product?.name || '(품번 미지정)'}
+                      {currentLot.productName || '(품번 미지정)'}
                     </div>
                   </div>
 
@@ -1557,7 +1586,7 @@ export const ProcessView = () => {
                             key={lm.id}
                             className="flex justify-between items-center p-2 bg-slate-50 rounded border border-slate-100"
                           >
-                            <span className="font-mono text-xs">{lm.materialLotNo}</span>
+                            <span className="font-mono text-xs">{lm.lotNumber || '-'}</span>
                             <Badge variant="outline" className="text-slate-500">
                               {lm.quantity}
                             </Badge>
@@ -1706,7 +1735,7 @@ export const ProcessView = () => {
                     <TableHead>LOT</TableHead>
                     <TableHead className="text-right">수량</TableHead>
                     <TableHead className="text-center w-[60px]">상태</TableHead>
-                    <TableHead className="text-center w-[100px]">출력</TableHead>
+                    <TableHead className="text-center w-[130px]">액션</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1732,8 +1761,8 @@ export const ProcessView = () => {
                       >
                         <TableCell className="font-medium text-slate-500 text-xs">
                           <div className="flex flex-col">
-                            <span>{new Date(lot.startedAt).toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit' })}</span>
-                            <span className="text-slate-400">{new Date(lot.startedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}</span>
+                            <span>{lot.startedAt ? new Date(lot.startedAt).toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit' }) : '-'}</span>
+                            <span className="text-slate-400">{lot.startedAt ? new Date(lot.startedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : ''}</span>
                           </div>
                         </TableCell>
                         <TableCell className="font-mono text-xs">
@@ -1757,56 +1786,82 @@ export const ProcessView = () => {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-center">
-                          {lot.status === 'COMPLETED' ? (
-                            <div className="flex items-center justify-center gap-1">
-                              {/* 전표 버튼 */}
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-6 w-6 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setSelectedHistoryLot(lot)
-                                  setShowDocumentDialog(true)
-                                }}
-                                title="전표 출력"
-                              >
-                                <FileText size={14} />
-                              </Button>
-                              {/* 라벨 버튼 */}
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-6 w-6 p-0 text-green-600 hover:text-green-700 hover:bg-green-50"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setSelectedHistoryLot(lot)
-                                  setShowLabelDialog(true)
-                                }}
-                                title="라벨 출력"
-                              >
-                                <Printer size={14} />
-                              </Button>
-                              {/* CA 공정일 때만 묶음 버튼 */}
-                              {processCode === 'CA' && (
+                          <div className="flex items-center justify-center gap-1">
+                            {/* 완료된 LOT: 전표/라벨/묶음 버튼 */}
+                            {lot.status === 'COMPLETED' && (
+                              <>
+                                {/* 전표 버튼 */}
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  className="h-6 w-6 p-0 text-purple-600 hover:text-purple-700 hover:bg-purple-50"
+                                  className="h-6 w-6 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     setSelectedHistoryLot(lot)
-                                    setShowBundleDialog(true)
+                                    setShowDocumentDialog(true)
                                   }}
-                                  title="묶음 바코드"
+                                  title="전표 출력"
                                 >
-                                  <Package size={14} />
+                                  <FileText size={14} />
                                 </Button>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="text-slate-300 text-xs">-</span>
-                          )}
+                                {/* 라벨 버튼 */}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 w-6 p-0 text-green-600 hover:text-green-700 hover:bg-green-50"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setSelectedHistoryLot(lot)
+                                    setShowLabelDialog(true)
+                                  }}
+                                  title="라벨 출력"
+                                >
+                                  <Printer size={14} />
+                                </Button>
+                                {/* CA 공정일 때만 묶음 버튼 */}
+                                {processCode === 'CA' && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-6 w-6 p-0 text-purple-600 hover:text-purple-700 hover:bg-purple-50"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setSelectedHistoryLot(lot)
+                                      setShowBundleDialog(true)
+                                    }}
+                                    title="묶음 바코드"
+                                  >
+                                    <Package size={14} />
+                                  </Button>
+                                )}
+                              </>
+                            )}
+                            {/* 삭제 버튼 (모든 상태에서 표시) */}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                if (window.confirm(`작업 "${lot.lotNumber}"을(를) 삭제하시겠습니까?\n\n삭제된 작업은 복구할 수 없습니다.`)) {
+                                  deleteLot(lot.id)
+                                    .then(() => {
+                                      toast.success('작업이 삭제되었습니다.')
+                                      // currentLot이 삭제된 LOT면 초기화
+                                      if (currentLot?.id === lot.id) {
+                                        setCurrentLot(null)
+                                      }
+                                    })
+                                    .catch((err) => {
+                                      toast.error(`삭제 실패: ${err instanceof Error ? err.message : '알 수 없는 오류'}`)
+                                    })
+                                }
+                              }}
+                              title="작업 삭제"
+                            >
+                              <Trash2 size={14} />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))
@@ -1857,16 +1912,16 @@ export const ProcessView = () => {
           lotId={selectedHistoryLot?.id || currentLot?.id}
           data={{
             lotNumber: (selectedHistoryLot || currentLot)!.lotNumber,
-            productCode: (selectedHistoryLot || currentLot)!.product?.code || selectedProductCode || '-',
-            productName: (selectedHistoryLot || currentLot)!.product?.name || selectedProduct?.name || '-',
+            productCode: (selectedHistoryLot || currentLot)!.productCode || selectedProductCode || '-',
+            productName: (selectedHistoryLot || currentLot)!.productName || selectedProduct?.name || '-',
             quantity: selectedHistoryLot ? selectedHistoryLot.completedQty : (completedQty || currentLot!.completedQty || currentLot!.plannedQty),
             unit: 'EA',
-            productionDate: new Date((selectedHistoryLot || currentLot)!.startedAt),
+            productionDate: new Date((selectedHistoryLot || currentLot)!.startedAt || new Date().toISOString()),
             processCode: (selectedHistoryLot || currentLot)!.processCode,
             processName: getProcessName((selectedHistoryLot || currentLot)!.processCode),
             inputMaterials: selectedHistoryLot
               ? (selectedHistoryLot.lotMaterials || []).map(lm => ({
-                  lotNumber: lm.materialLotNo,
+                  lotNumber: lm.lotNumber || '-',
                   productCode: lm.materialCode || '-',
                   name: lm.materialName || '-',
                   quantity: lm.quantity,
@@ -1890,7 +1945,7 @@ export const ProcessView = () => {
             plannedQuantity: (selectedHistoryLot || currentLot)!.plannedQty,
             completedQuantity: selectedHistoryLot ? selectedHistoryLot.completedQty : (completedQty || currentLot!.completedQty),
             defectQuantity: selectedHistoryLot ? (selectedHistoryLot.defectQty || 0) : (defectQty || currentLot!.defectQty || 0),
-            workerName: (selectedHistoryLot || currentLot)!.worker?.name || user?.name,
+            workerName: user?.name, // TODO: workerId만 있음, 이름 조회 필요
           }}
           onPrint={() => {
             toast.success('전표 인쇄 요청 완료')
@@ -1924,12 +1979,12 @@ export const ProcessView = () => {
           lotData={{
             lotNumber: (selectedHistoryLot || currentLot)!.lotNumber,
             processCode: (selectedHistoryLot || currentLot)!.processCode,
-            productCode: (selectedHistoryLot || currentLot)!.product?.code,
-            productName: (selectedHistoryLot || currentLot)!.product?.name,
+            productCode: (selectedHistoryLot || currentLot)!.productCode,
+            productName: (selectedHistoryLot || currentLot)!.productName,
             quantity: selectedHistoryLot ? selectedHistoryLot.completedQty : (completedQty || currentLot!.completedQty || currentLot!.plannedQty),
-            date: new Date((selectedHistoryLot || currentLot)!.startedAt).toISOString().split('T')[0],
+            date: (selectedHistoryLot || currentLot)!.startedAt ? new Date((selectedHistoryLot || currentLot)!.startedAt!).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
             lineCode: (selectedHistoryLot || currentLot)!.lineCode || undefined,
-            workerName: (selectedHistoryLot || currentLot)!.worker?.name,
+            workerName: undefined, // TODO: workerId만 있음, 이름 조회 필요
           }}
           onPrint={() => {
             toast.success('라벨 인쇄 요청 완료')

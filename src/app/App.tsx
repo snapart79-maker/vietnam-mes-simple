@@ -20,6 +20,7 @@ import { ProductProvider } from './context/ProductContext';
 import { BOMProvider } from './context/BOMContext';
 import { ProductionProvider } from './context/ProductionContext';
 import { StockProvider } from './context/StockContext';
+import { PurchaseOrderProvider } from './context/PurchaseOrderContext';
 
 // Layout
 import { MainLayout } from './layout/MainLayout';
@@ -34,6 +35,7 @@ import InspectionView from './pages/InspectionView';
 import ReportView from './pages/ReportView';
 import MasterData from './pages/MasterData';
 import Settings from './pages/Settings';
+import PurchaseOrder from './pages/PurchaseOrder';
 import { Toaster } from 'sonner';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -47,7 +49,8 @@ function App() {
               <BOMProvider>
                 <StockProvider>
                   <ProductionProvider>
-                    <HashRouter>
+                    <PurchaseOrderProvider>
+                      <HashRouter>
                       <Routes>
                         {/* 로그인 페이지 */}
                         <Route path="/login" element={<Login />} />
@@ -56,6 +59,9 @@ function App() {
                         <Route path="/" element={<MainLayout />}>
                           <Route index element={<Dashboard />} />
                           <Route path="dashboard" element={<Dashboard />} />
+
+                          {/* 발주서 관리 */}
+                          <Route path="purchase-order" element={<PurchaseOrder />} />
 
                           {/* 자재 관리 */}
                           <Route path="material/receiving" element={<MaterialReceiving />} />
@@ -80,8 +86,9 @@ function App() {
                           <Route path="*" element={<Navigate to="/" replace />} />
                         </Route>
                       </Routes>
-                    </HashRouter>
-                    <Toaster position="top-right" richColors />
+                      </HashRouter>
+                      <Toaster position="top-right" richColors />
+                    </PurchaseOrderProvider>
                   </ProductionProvider>
                 </StockProvider>
               </BOMProvider>

@@ -134,6 +134,8 @@ interface ProductionContextValue extends ProductionState {
     completedQty?: number
     defectQty?: number
   }) => Promise<LotWithRelations>
+  // LOT 삭제
+  deleteLot: (lotId: number) => Promise<void>
   // 에러 초기화
   clearError: () => void
   // 생산 데이터 초기화 (Context 상태)
@@ -457,13 +459,29 @@ export function ProductionProvider({ children }: ProductionProviderProps) {
     }
   }, [setLoading, setError])
 
-  // LOT 목록 새로고침 (Electron API)
+  // LOT 목록 새로고침 (Electron API + 브라우저 Mock)
   const refreshTodayLots = useCallback(async (): Promise<void> => {
+    // 브라우저 모드: Mock 서비스 사용
     if (!hasBusinessAPI()) {
-      console.log('[ProductionContext] Electron API not available, skipping refresh')
-      return
+      console.log('[ProductionContext] Browser mode: Using mock getTodayLots')
+      setLoading(true)
+      try {
+        const lots = await MockProductionService.getTodayLots(state.currentProcess)
+
+        setState((prev) => ({
+          ...prev,
+          todayLots: lots,
+          isLoading: false,
+        }))
+        return
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'LOT 목록 조회 실패'
+        setError(message)
+        throw err
+      }
     }
 
+    // Electron 모드: IPC 호출
     setLoading(true)
     try {
       const api = getAPI()
@@ -484,15 +502,33 @@ export function ProductionProvider({ children }: ProductionProviderProps) {
     }
   }, [state.currentProcess, setLoading, setError])
 
-  // 공정별 LOT 조회 (Electron API)
+  // 공정별 LOT 조회 (Electron API + 브라우저 Mock)
   const getLotsByProcess = useCallback(async (
     processCode: string,
     status?: LotStatus
   ): Promise<LotWithRelations[]> => {
+    // 브라우저 모드: Mock 서비스 사용
     if (!hasBusinessAPI()) {
-      return []
+      console.log('[ProductionContext] Browser mode: Using mock getLotsByProcess')
+      setLoading(true)
+      try {
+        let lots = await MockProductionService.getLotsByProcess(processCode)
+
+        // 상태 필터링 (클라이언트 측)
+        if (status) {
+          lots = lots.filter((l) => l.status === status)
+        }
+
+        setLoading(false)
+        return lots
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'LOT 조회 실패'
+        setError(message)
+        throw err
+      }
     }
 
+    // Electron 모드: IPC 호출
     setLoading(true)
     try {
       const api = getAPI()
@@ -580,6 +616,53 @@ export function ProductionProvider({ children }: ProductionProviderProps) {
     }
   }, [setLoading, setError])
 
+  // LOT 삭제 (Electron API + 브라우저 Mock)
+  const deleteLot = useCallback(async (lotId: number): Promise<void> => {
+    // 브라우저 모드: Mock 서비스 사용
+    if (!hasBusinessAPI()) {
+      console.log('[ProductionContext] Browser mode: Using mock deleteLot')
+      setLoading(true)
+      try {
+        await MockProductionService.deleteLot(lotId, { hardDelete: true })
+
+        // 상태 업데이트: todayLots에서 제거, currentLot 초기화
+        setState((prev) => ({
+          ...prev,
+          currentLot: prev.currentLot?.id === lotId ? null : prev.currentLot,
+          todayLots: prev.todayLots.filter((l) => l.id !== lotId),
+          isLoading: false,
+        }))
+        return
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'LOT 삭제 실패'
+        setError(message)
+        throw err
+      }
+    }
+
+    // Electron 모드: IPC 호출 (TODO: 실제 API 구현 필요)
+    setLoading(true)
+    try {
+      // Electron API가 구현되면 여기서 호출
+      // const api = getAPI()
+      // await api!.production.deleteLot(lotId)
+
+      // 임시: Mock 서비스 사용
+      await MockProductionService.deleteLot(lotId, { hardDelete: true })
+
+      setState((prev) => ({
+        ...prev,
+        currentLot: prev.currentLot?.id === lotId ? null : prev.currentLot,
+        todayLots: prev.todayLots.filter((l) => l.id !== lotId),
+        isLoading: false,
+      }))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'LOT 삭제 실패'
+      setError(message)
+      throw err
+    }
+  }, [setLoading, setError])
+
   // 생산 데이터 초기화 (Context 상태)
   const resetProduction = useCallback(() => {
     const count = state.todayLots.length
@@ -607,6 +690,7 @@ export function ProductionProvider({ children }: ProductionProviderProps) {
     getLotsByProcess,
     getLotsByStatus,
     updateLotQuantity,
+    deleteLot,
     clearError,
     resetProduction,
   }

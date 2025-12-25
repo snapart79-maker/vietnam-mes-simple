@@ -1020,10 +1020,94 @@ material: {
 
 ---
 
+## 발주서 (일일 생산계획) 시스템
+
+### 개요
+
+관리자가 일일 생산 계획을 등록하고, 작업자가 바코드 스캔으로 작업을 시작할 수 있는 시스템.
+
+### 발주서 바코드 형식
+
+| 유형 | 형식 | 예시 |
+|------|------|------|
+| 일반 | `{품번}Q{수량}-PO{YYMMDD}-{3자리}` | `00315452Q100-PO251225-001` |
+| CA 절압착 | `{절압품번}Q{수량}-PO{YYMMDD}-{3자리}` | `00315452-001Q50-PO251225-001` |
+
+### 핵심 규칙
+
+| 항목 | 규칙 |
+|------|------|
+| 생산 예정일 | 오늘 ~ 7일 후만 허용 |
+| CA 공정 | 절압착 품번별 별도 바코드 |
+| 기존 작업 | 발주서 없이 수동 작업 가능 |
+| LOT 체계 | 발주서는 PO 접두어, 공정 LOT는 기존대로 |
+
+### 워크플로우
+
+**1. 발주서 등록 (관리자)**
+```
+발주서 관리 → 새 발주서 → 생산 예정일 선택 → 품목 추가 → 등록
+```
+
+**2. 작업 시작 (작업자)**
+```
+공정 모니터링 → 발주서 바코드 스캔 → 완제품/절압착 자동 선택 → 자재 스캔 → 승인
+```
+
+### 서비스 함수
+
+```typescript
+import { usePurchaseOrder } from '@/app/context/PurchaseOrderContext'
+
+const {
+  purchaseOrders,              // 발주서 목록
+  createPurchaseOrder,         // 발주서 생성
+  addPurchaseOrderItem,        // 아이템 추가
+  getPurchaseOrderItemByBarcode,  // 바코드로 아이템 조회
+  startPurchaseOrderItem,      // 작업 시작
+  updatePurchaseOrderItemProgress,  // 진행률 업데이트
+  getProgressByProcess,        // 공정별 진행률
+} = usePurchaseOrder()
+```
+
+### 바코드 서비스
+
+```typescript
+import {
+  generatePOBarcode,
+  parsePOBarcode,
+  isPOBarcode,
+} from '@/services/barcodeService'
+
+// PO 바코드 생성
+const barcode = generatePOBarcode('00315452', 100, new Date(), 1)
+// → '00315452Q100-PO251225-001'
+
+// PO 바코드 파싱
+const parsed = parsePOBarcode('00315452Q100-PO251225-001')
+// { productCode: '00315452', quantity: 100, orderDate: Date, sequence: 1 }
+
+// PO 바코드 여부 확인
+isPOBarcode('00315452Q100-PO251225-001')  // true
+```
+
+### 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `src/app/context/PurchaseOrderContext.tsx` | 발주서 Context |
+| `src/app/pages/PurchaseOrder.tsx` | 발주서 관리 페이지 |
+| `src/app/components/dialogs/PurchaseOrderDialog.tsx` | 발주서 등록 다이얼로그 |
+| `src/services/mock/purchaseOrderService.mock.ts` | Mock 서비스 (Browser용) |
+| `src/services/purchaseOrderService.ts` | 실제 서비스 (Electron용) |
+
+---
+
 ## 변경 이력
 
 | 날짜 | 내용 |
 |------|------|
+| 2025-12-25 | 발주서(일일 생산계획) 시스템 구현 (PurchaseOrderContext, PurchaseOrder 페이지, PurchaseOrderDialog, ProcessView PO 바코드 스캔 지원, 다국어 ko/vi) |
 | 2025-12-23 | 최근 작업 출력 기능 (ProcessView: 완료된 LOT에 전표/라벨/묶음 버튼 추가, selectedHistoryLot 상태 관리, 다이얼로그 연동) |
 | 2025-12-23 | LOT 타입 확장 (LotWithRelations: crimpCode, lotMaterials에 materialCode/materialName 추가, CreateLotInput: inputMaterialDetails 파라미터) |
 | 2025-12-23 | 공정별 자재 관리 시스템 (Phase A~E: processCode 기반 재고 관리, FIFO 차감, 공정 자재 스캔 페이지, 52개 테스트) |

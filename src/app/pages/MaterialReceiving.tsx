@@ -195,7 +195,32 @@ export const MaterialReceiving = () => {
       const hqCode = parsed.materialCode // 바코드에서 추출한 본사 코드
       const lotNumber = parsed.lotNumber
 
-      // 2. 자재 조회 (본사 코드 → MES 자재)
+      // 2. 중복 바코드 체크 (이미 불출된 LOT인지 확인)
+      const isDuplicate = confirmedItems.some(item => item.lotNumber === lotNumber)
+      if (isDuplicate) {
+        const errorItem: ScannedItem = {
+          id: Date.now(),
+          barcode: barcodeValue,
+          materialId: 0,
+          materialCode: hqCode,
+          materialName: '(중복 바코드)',
+          lotNumber: lotNumber,
+          quantity: qty,
+          unit: 'EA',
+          time: new Date().toLocaleTimeString(),
+          status: 'error',
+          error: '이미 스캔된 바코드',
+          selected: false,
+        }
+        setPendingItems((prev) => [errorItem, ...prev])
+        toast.error(`LOT ${lotNumber}은(는) 이미 불출되었습니다.`)
+        setBarcode('')
+        setIsProcessing(false)
+        inputRef.current?.focus()
+        return
+      }
+
+      // 3. 자재 조회 (본사 코드 → MES 자재)
       const material = getMaterialByHQCode(hqCode)
 
       if (!material) {
@@ -221,7 +246,7 @@ export const MaterialReceiving = () => {
         return
       }
 
-      // 3. 생산창고로 불출
+      // 4. 생산창고로 불출
       const issueInput: IssueToProductionInput = {
         materialId: material.id,
         materialCode: material.code,

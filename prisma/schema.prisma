@@ -25,9 +25,11 @@ model User {
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
   // Relations
-  productionLots ProductionLot[]
-  inspections    Inspection[]
-  tableSettings  TableUserSettings[]
+  productionLots     ProductionLot[]
+  inspections        Inspection[]
+  tableSettings      TableUserSettings[]
+  purchaseOrders     PurchaseOrder[]
+  purchaseOrderItems PurchaseOrderItem[] @relation("POItemWorker")
 
   @@map("users")
 }
@@ -57,12 +59,13 @@ model Product {
   updatedAt     DateTime      @updatedAt @map("updated_at")
 
   // Relations
-  boms            BOM[]            @relation("ProductBOM")
-  bomItems        BOM[]            @relation("BOMItem")
-  productionLots  ProductionLot[]
-  bundleLots      BundleLot[]
-  carryOvers      CarryOver[]
-  processRoutings ProcessRouting[]
+  boms               BOM[]               @relation("ProductBOM")
+  bomItems           BOM[]               @relation("BOMItem")
+  productionLots     ProductionLot[]
+  bundleLots         BundleLot[]
+  carryOvers         CarryOver[]
+  processRoutings    ProcessRouting[]
+  purchaseOrderItems PurchaseOrderItem[]
 
   @@index([code])
   @@index([type])
@@ -153,15 +156,18 @@ model ProductionLot {
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
   // Relations
-  lotMaterials    LotMaterial[]
-  inspections     Inspection[]
-  bundleItems     BundleItem[]
+  lotMaterials          LotMaterial[]
+  inspections           Inspection[]
+  bundleItems           BundleItem[]
+  purchaseOrderItemId   Int?                  @map("purchase_order_item_id")
+  purchaseOrderItem     PurchaseOrderItem?    @relation(fields: [purchaseOrderItemId], references: [id])
 
   @@index([lotNumber])
   @@index([processCode])
   @@index([status])
   @@index([productId])
   @@index([startedAt])
+  @@index([purchaseOrderItemId])
   @@map("production_lots")
 }
 
@@ -426,4 +432,74 @@ model ProcessRouting {
   @@index([productId])
   @@index([processCode])
   @@map("process_routings")
+}
+
+// ============================================
+// 18. 발주서 (PurchaseOrder) - 일일 생산계획
+// ============================================
+model PurchaseOrder {
+  id          Int                 @id @default(autoincrement())
+  orderNo     String              @unique @db.VarChar(50) @map("order_no")  // PO-YYMMDD-XXX
+  orderDate   DateTime            @db.Date @map("order_date")               // 생산 예정일
+  status      PurchaseOrderStatus @default(CREATED)
+  description String?             @db.Text
+  createdById Int?                @map("created_by_id")
+  createdBy   User?               @relation(fields: [createdById], references: [id])
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+
+  // Relations
+  items       PurchaseOrderItem[]
+
+  @@index([orderDate])
+  @@index([status])
+  @@map("purchase_orders")
+}
+
+enum PurchaseOrderStatus {
+  CREATED       // 생성됨
+  IN_PROGRESS   // 진행중
+  COMPLETED     // 완료
+  CANCELLED     // 취소
+}
+
+// ============================================
+// 19. 발주서 아이템 (PurchaseOrderItem) - 품목별 작업지시
+// ============================================
+model PurchaseOrderItem {
+  id              Int                     @id @default(autoincrement())
+  purchaseOrderId Int                     @map("purchase_order_id")
+  purchaseOrder   PurchaseOrder           @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  barcode         String                  @unique @db.VarChar(100)              // 발주서 아이템 바코드
+  productId       Int                     @map("product_id")
+  product         Product                 @relation(fields: [productId], references: [id])
+  processCode     String                  @db.VarChar(10) @map("process_code")  // CA, MC, SB 등
+  plannedQty      Int                     @default(0) @map("planned_qty")       // 계획 수량
+  completedQty    Int                     @default(0) @map("completed_qty")     // 완료 수량
+  defectQty       Int                     @default(0) @map("defect_qty")        // 불량 수량
+  status          PurchaseOrderItemStatus @default(PENDING)
+  crimpCode       String?                 @db.VarChar(50) @map("crimp_code")    // 절압착 품번 (CA용)
+  lineCode        String?                 @db.VarChar(20) @map("line_code")     // 배정 라인
+  startedAt       DateTime?               @map("started_at")
+  completedAt     DateTime?               @map("completed_at")
+  workerId        Int?                    @map("worker_id")
+  worker          User?                   @relation("POItemWorker", fields: [workerId], references: [id])
+  createdAt       DateTime                @default(now()) @map("created_at")
+  updatedAt       DateTime                @updatedAt @map("updated_at")
+
+  // Relations
+  productionLots  ProductionLot[]
+
+  @@index([purchaseOrderId])
+  @@index([productId])
+  @@index([barcode])
+  @@index([status])
+  @@map("purchase_order_items")
+}
+
+enum PurchaseOrderItemStatus {
+  PENDING       // 대기
+  IN_PROGRESS   // 진행중
+  COMPLETED     // 완료
+  CANCELLED     // 취소
 }

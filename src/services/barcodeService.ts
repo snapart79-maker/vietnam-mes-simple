@@ -435,13 +435,19 @@ function normalizeSeparator(barcode: string): string {
 /**
  * 바코드 버전 감지
  * 'bundle' 타입 추가 (BD- 접두어)
+ * 'po' 타입 추가 (발주서 바코드: -PO 포함)
  */
-export function detectBarcodeVersion(barcode: string): 1 | 2 | 'bundle' | null {
+export function detectBarcodeVersion(barcode: string): 1 | 2 | 'bundle' | 'po' | null {
   const normalized = normalizeSeparator(barcode).toUpperCase()
 
   // Bundle: BD-로 시작
   if (normalized.startsWith('BD-')) {
     return 'bundle'
+  }
+
+  // PO (발주서): -PO 포함
+  if (normalized.includes('-PO') && PO_BARCODE_PATTERN.test(normalized)) {
+    return 'po'
   }
 
   // V2: Q가 포함되어 있음
@@ -1071,4 +1077,137 @@ export function formatBarcordInspectionInfo(barcode: string): string {
   }
 
   return `잘못된 검사 바코드: ${barcode}`
+}
+
+// ============================================
+// PO (Purchase Order) Barcode - 발주서 바코드
+// ============================================
+
+/**
+ * 발주서 바코드 타입
+ * 형식: {품번}Q{수량}-PO{YYMMDD}-{3자리시퀀스}
+ * 예시: 00315452Q100-PO251225-001
+ */
+export interface ParsedPOBarcode {
+  type: 'PO'
+  productCode: string    // 완제품/절압착 품번
+  quantity: number       // 계획 수량
+  orderDate: string      // YYMMDD
+  sequence: string       // 3자리 시퀀스
+}
+
+/**
+ * 발주서 바코드 정규식 패턴
+ * 형식: {품번}Q{수량}-PO{YYMMDD}-{3자리시퀀스}
+ */
+export const PO_BARCODE_PATTERN = /^([A-Z0-9-]+)Q(\d+)-PO(\d{6})-(\d{3})$/i
+
+/**
+ * 발주서 바코드 생성
+ * 형식: {품번}Q{수량}-PO{YYMMDD}-{3자리시퀀스}
+ * 예시: 00315452Q100-PO251225-001
+ *
+ * @param productCode 완제품 또는 절압착 품번
+ * @param quantity 계획 수량
+ * @param orderDate 생산 예정일
+ * @param sequence 일련번호 (1-999)
+ */
+export function generatePOBarcode(
+  productCode: string,
+  quantity: number,
+  orderDate: Date,
+  sequence: number
+): string {
+  if (!productCode || productCode.trim().length === 0) {
+    throw new Error('품번이 필요합니다.')
+  }
+
+  if (quantity <= 0 || !Number.isInteger(quantity)) {
+    throw new Error('수량은 양의 정수여야 합니다.')
+  }
+
+  if (sequence < 1 || sequence > 999 || !Number.isInteger(sequence)) {
+    throw new Error('시퀀스는 1-999 사이의 정수여야 합니다.')
+  }
+
+  const dateStr = getDateString(orderDate)
+  const seqStr = String(sequence).padStart(3, '0')
+
+  return `${productCode}Q${quantity}-PO${dateStr}-${seqStr}`
+}
+
+/**
+ * 발주서 바코드 파싱
+ * @param barcode 발주서 바코드 문자열
+ * @returns 파싱된 발주서 바코드 데이터 또는 null
+ */
+export function parsePOBarcode(barcode: string): ParsedPOBarcode | null {
+  if (!barcode || typeof barcode !== 'string') {
+    return null
+  }
+
+  const trimmed = barcode.trim().toUpperCase()
+  const match = PO_BARCODE_PATTERN.exec(trimmed)
+
+  if (!match) {
+    return null
+  }
+
+  const [, productCode, quantityStr, orderDate, sequence] = match
+  const quantity = parseInt(quantityStr, 10)
+
+  if (isNaN(quantity) || quantity <= 0) {
+    return null
+  }
+
+  return {
+    type: 'PO',
+    productCode,
+    quantity,
+    orderDate,
+    sequence,
+  }
+}
+
+/**
+ * 발주서 바코드 여부 확인
+ * @param barcode 바코드 문자열
+ * @returns 발주서 바코드 여부
+ */
+export function isPOBarcode(barcode: string): boolean {
+  if (!barcode || typeof barcode !== 'string') {
+    return false
+  }
+  // PO 바코드는 -PO 를 포함함
+  const normalized = barcode.trim().toUpperCase()
+  return normalized.includes('-PO') && PO_BARCODE_PATTERN.test(normalized)
+}
+
+/**
+ * 발주서 바코드 유효성 검사
+ * @param barcode 검사할 바코드 문자열
+ * @returns 유효 여부
+ */
+export function validatePOBarcode(barcode: string): boolean {
+  return parsePOBarcode(barcode) !== null
+}
+
+/**
+ * 발주서 바코드 정보를 사람이 읽을 수 있는 형태로 변환
+ * @param barcode 발주서 바코드 문자열
+ * @returns 포맷된 정보 문자열
+ */
+export function formatPOBarcodeInfo(barcode: string): string {
+  const parsed = parsePOBarcode(barcode)
+
+  if (!parsed) {
+    return `잘못된 발주서 바코드: ${barcode}`
+  }
+
+  const dateObj = parseDateString(parsed.orderDate)
+  const dateStr = dateObj
+    ? `${dateObj.getFullYear()}.${dateObj.getMonth() + 1}.${dateObj.getDate()}`
+    : parsed.orderDate
+
+  return `[발주서] ${parsed.productCode} - ${parsed.quantity}개 | 생산일: ${dateStr} #${parsed.sequence}`
 }

@@ -756,6 +756,46 @@ export async function deleteInProgressProduction(
 }
 
 /**
+ * LOT 삭제 (Mock) - 모든 상태 삭제 가능
+ * @param lotId LOT ID
+ * @param options.hardDelete true면 완전 삭제, false면 CANCELLED 상태로 변경
+ */
+export async function deleteLot(
+  lotId: number,
+  options: { hardDelete?: boolean } = { hardDelete: true }
+): Promise<void> {
+  await new Promise((r) => setTimeout(r, 200))
+
+  const lotIndex = MOCK_LOTS.findIndex((l) => l.id === lotId)
+  if (lotIndex === -1) {
+    throw new Error(`LOT을 찾을 수 없습니다: ${lotId}`)
+  }
+
+  const lot = MOCK_LOTS[lotIndex]
+
+  // 이월 사용 롤백 (진행 중인 LOT인 경우)
+  if (lot.carryOverIn > 0) {
+    const carryOver = MOCK_CARRY_OVERS.find((c) => c.targetLotNo === lot.lotNumber)
+    if (carryOver) {
+      carryOver.usedQty -= lot.carryOverIn
+      carryOver.targetLotNo = null
+      carryOver.isUsed = false
+    }
+  }
+
+  if (options.hardDelete) {
+    MOCK_LOTS.splice(lotIndex, 1)
+  } else {
+    lot.status = 'CANCELLED'
+  }
+
+  saveLots()
+  if (lot.carryOverIn > 0) {
+    saveCarryOvers()
+  }
+}
+
+/**
  * 진행 중인 LOT 목록 조회 (Mock)
  */
 export async function getInProgressLots(options?: {

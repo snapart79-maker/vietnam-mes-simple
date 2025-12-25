@@ -1,19 +1,20 @@
 import React, { useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { 
-  LayoutDashboard, 
-  Factory, 
-  ClipboardCheck, 
-  FileBarChart, 
-  Database, 
-  ChevronDown, 
+import {
+  LayoutDashboard,
+  Factory,
+  ClipboardCheck,
+  FileBarChart,
+  Database,
+  ChevronDown,
   ChevronRight,
   Package,
   ScanLine,
   Settings,
   ChevronsLeft,
   ChevronsRight,
-  Archive
+  Archive,
+  ClipboardList
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -130,6 +131,7 @@ export const Sidebar = ({ isCollapsed = false, toggleSidebar, isMobile = false, 
 
       <nav className="flex-1 overflow-y-auto py-4 px-2 space-y-1 overflow-x-hidden">
         <NavItem to="/dashboard" label="대시보드" icon={LayoutDashboard} {...navProps} />
+        <NavItem to="/purchase-order" label="발주서 관리" icon={ClipboardList} {...navProps} />
 
         <GroupHeader label="자재 관리" icon={Package} id="material" {...groupProps} />
         {((!isCollapsed || isMobile) && expandedMenus.material) && (

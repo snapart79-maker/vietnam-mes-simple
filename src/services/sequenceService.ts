@@ -137,6 +137,34 @@ export async function getNextBundleSequence(
 }
 
 /**
+ * 발주서(PO) 전용 일련번호 생성
+ * 3자리 포맷 (001-999)
+ *
+ * @param orderDate 생산 예정일
+ *
+ * @example
+ * await getNextPOSequence(new Date())
+ * // { prefix: 'PO', dateKey: '251225', sequence: 1, formatted: '001' }
+ */
+export async function getNextPOSequence(
+  orderDate: Date = new Date()
+): Promise<SequenceResult> {
+  const prefix = 'PO'
+  return getNextSequence(prefix, orderDate, BUNDLE_PADDING)
+}
+
+/**
+ * 발주서(PO) 현재 시퀀스 조회 (증가 없이)
+ *
+ * @param orderDate 생산 예정일
+ */
+export async function getCurrentPOSequence(
+  orderDate: Date = new Date()
+): Promise<number> {
+  return getCurrentSequence('PO', orderDate)
+}
+
+/**
  * 현재 시퀀스 값 조회 (증가 없이)
  *
  * @param prefix 접두어

@@ -194,8 +194,8 @@ export const InspectionView = () => {
       setCurrentLot({
         id: lot.id,
         lotNumber: lot.lotNumber,
-        productCode: lot.product?.code || '-',
-        productName: lot.product?.name || '(제품 미지정)',
+        productCode: lot.productCode || '-',
+        productName: lot.productName || '(제품 미지정)',
         processCode: lot.processCode,
         quantity: lot.completedQty,
       })

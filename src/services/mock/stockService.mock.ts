@@ -1442,24 +1442,12 @@ export async function scanToProcess(input: ScanToProcessInput): Promise<ScanToPr
   let processStock: StockItem
 
   if (existingProcess) {
-    // 이미 소진된 LOT인지 확인
-    if (existingProcess.availableQty <= 0 && existingProcess.usedQty > 0) {
-      // 생산창고 차감 롤백
-      productionStock.usedQty -= scanQty
-      productionStock.availableQty = productionStock.quantity - productionStock.usedQty
-      saveStocks()
-
-      return {
-        success: false,
-        scannedQty: 0,
-        error: `LOT ${input.lotNumber}은(는) ${input.processCode} 공정에서 이미 사용이 완료된 바코드입니다.`,
-      }
-    }
-
-    // 기존 공정 LOT에 수량 추가
+    // 기존 공정 LOT에 수량 추가 (이미 소진되었어도 생산창고에 남은 재고가 있으면 추가 가능)
+    // 생산창고 재고 확인은 이미 위에서 완료됨 (availableQty <= 0이면 여기까지 오지 않음)
     existingProcess.quantity += scanQty
     existingProcess.availableQty += scanQty
     processStock = existingProcess
+    console.log(`[scanToProcess] 기존 공정 LOT에 ${scanQty} 추가: total=${existingProcess.quantity}, avail=${existingProcess.availableQty}`)
   } else {
     // 공정에 새 레코드 생성
     const newId = MOCK_STOCKS.length > 0 ? Math.max(...MOCK_STOCKS.map(s => s.id)) + 1 : 1
